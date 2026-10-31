@@ -1018,12 +1018,10 @@ impl Association {
         let packets = if let Some(c) = chunk_any.downcast_ref::<ChunkInit>() {
             if c.is_ack {
                 self.handle_init_ack(p, c, now)?
+            } else if self.handshake_completed {
+                self.handle_restart_init(p, c, now)?
             } else {
-                if self.handshake_completed {
-                    self.handle_restart_init(p, c, now)?
-                } else {
-                    self.handle_init(p, c)?
-                }
+                self.handle_init(p, c)?
             }
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkAbort>() {
             let mut err_str = String::new();
