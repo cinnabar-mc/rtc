@@ -243,7 +243,7 @@ fn test_certificate_verify() -> Result<()> {
         crypto::default_provider().map_err(crypto_error)?.crypto(),
     )?;
     let ed25519_algorithm = SignatureHashAlgorithm {
-        hash: HashAlgorithm::Sha256,
+        hash: HashAlgorithm::Ed25519,
         signature: SignatureAlgorithm::Ed25519,
     };
     let cert_verify_ed25519 = generate_certificate_verify(
@@ -406,5 +406,95 @@ fn test_external_signing_key_is_invoked_for_signing() -> Result<()> {
     assert_eq!(&*last_message.lock().unwrap(), handshake_bodies);
     assert_eq!(cert_verify, expected_signature);
 
+    Ok(())
+}
+
+#[test]
+fn handshake_signature_checks_the_certificate_algorithm_and_curve() -> Result<()> {
+    let provider = crypto::default_provider().map_err(crypto_error)?;
+    let certificate =
+        Certificate::generate_self_signed(vec!["localhost".into()], provider.crypto())?;
+    let message = b"handshake transcript";
+    let algorithm = SignatureHashAlgorithm {
+        hash: HashAlgorithm::Sha256,
+        signature: SignatureAlgorithm::Ecdsa,
+    };
+    let signature = certificate
+        .private_key
+        .signing_key
+        .sign(crypto::SignatureScheme::EcdsaP256Sha256, message)
+        .map_err(crypto_error)?;
+    let raw = certificate.certificate[0].as_ref().to_vec();
+    verify_signature(
+        provider.crypto(),
+        message,
+        &algorithm,
+        &signature,
+        &[raw.clone()],
+        false,
+    )?;
+    // Preserve the valid key bits and signature, changing only the SPKI declaration.
+    for oid in [
+        &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01][..],
+        &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07][..],
+    ] {
+        let mut altered = raw.clone();
+        let index = altered
+            .windows(oid.len())
+            .position(|bytes| bytes == oid)
+            .unwrap();
+        altered[index + oid.len() - 1] ^= 1;
+        assert!(
+            verify_signature(
+                provider.crypto(),
+                message,
+                &algorithm,
+                &signature,
+                &[altered],
+                false
+            )
+            .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ed25519_signatures_require_the_ed25519_wire_scheme() -> Result<()> {
+    let provider = crypto::default_provider().map_err(crypto_error)?;
+    let certificate = Certificate::generate_self_signed_with_alg(
+        vec!["localhost".into()],
+        &rcgen::PKCS_ED25519,
+        provider.crypto(),
+    )?;
+    let message = b"certificate verify";
+    let signature = certificate
+        .private_key
+        .signing_key
+        .sign(crypto::SignatureScheme::Ed25519, message)
+        .map_err(crypto_error)?;
+    let raw = certificate.certificate[0].as_ref().to_vec();
+    for hash in [
+        HashAlgorithm::Ed25519,
+        HashAlgorithm::Sha256,
+        HashAlgorithm::Unsupported,
+    ] {
+        let algorithm = SignatureHashAlgorithm {
+            hash,
+            signature: SignatureAlgorithm::Ed25519,
+        };
+        assert_eq!(
+            verify_signature(
+                provider.crypto(),
+                message,
+                &algorithm,
+                &signature,
+                &[raw.clone()],
+                true
+            )
+            .is_ok(),
+            hash == HashAlgorithm::Ed25519
+        );
+    }
     Ok(())
 }

@@ -116,7 +116,9 @@ pub struct SignatureHashAlgorithm {
 impl SignatureHashAlgorithm {
     pub(crate) fn crypto_scheme(&self) -> Result<crypto::SignatureScheme> {
         match (self.signature, self.hash) {
-            (SignatureAlgorithm::Ed25519, _) => Ok(crypto::SignatureScheme::Ed25519),
+            (SignatureAlgorithm::Ed25519, HashAlgorithm::Ed25519) => {
+                Ok(crypto::SignatureScheme::Ed25519)
+            }
             (SignatureAlgorithm::Ecdsa, HashAlgorithm::Sha256) => {
                 Ok(crypto::SignatureScheme::EcdsaP256Sha256)
             }

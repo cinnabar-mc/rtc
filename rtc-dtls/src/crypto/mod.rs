@@ -290,34 +290,69 @@ fn verify_signature(
     let (_, certificate) = x509_parser::parse_x509_certificate(&raw_certificates[0])
         .map_err(|e| Error::Other(e.to_string()))?;
 
-    let encoding = match hash_algorithm.signature {
-        SignatureAlgorithm::Ed25519 => PublicKeyEncoding::Ed25519Raw,
-        SignatureAlgorithm::Ecdsa => PublicKeyEncoding::EcUncompressedPoint,
-        SignatureAlgorithm::Rsa => PublicKeyEncoding::RsaPkcs1Der,
-        SignatureAlgorithm::Unsupported => return Err(Error::ErrKeySignatureVerifyUnimplemented),
-    };
-    if hash_algorithm.signature == SignatureAlgorithm::Rsa
-        && remote_key_signature.len() < 256
-        && !insecure_verification
-    {
-        return Err(Error::ErrKeySignatureMismatch);
-    }
-    let scheme = match (hash_algorithm.signature, hash_algorithm.hash) {
-        (SignatureAlgorithm::Ecdsa, crate::signature_hash_algorithm::HashAlgorithm::Sha256) => {
-            if certificate
-                .tbs_certificate
-                .subject_pki
-                .subject_public_key
-                .data
-                .len()
-                == 97
-            {
-                crypto::SignatureScheme::EcdsaP384Sha256
-            } else {
-                crypto::SignatureScheme::EcdsaP256Sha256
-            }
+    let spki = &certificate.tbs_certificate.subject_pki;
+    let (encoding, scheme) = match hash_algorithm.signature {
+        SignatureAlgorithm::Ed25519
+            if spki.algorithm.algorithm == OID_ED25519
+                && hash_algorithm.hash
+                    == crate::signature_hash_algorithm::HashAlgorithm::Ed25519
+                && spki.algorithm.parameters.is_none() =>
+        {
+            (
+                PublicKeyEncoding::Ed25519Raw,
+                crypto::SignatureScheme::Ed25519,
+            )
         }
-        _ => hash_algorithm.crypto_scheme()?,
+        SignatureAlgorithm::Ecdsa if spki.algorithm.algorithm == OID_ECDSA => {
+            let curve = spki
+                .algorithm
+                .parameters
+                .as_ref()
+                .and_then(|parameters| parameters.as_oid().ok())
+                .ok_or(Error::ErrKeySignatureMismatch)?;
+            let scheme = match (curve, hash_algorithm.hash) {
+                (curve, crate::signature_hash_algorithm::HashAlgorithm::Sha256)
+                    if curve == oid!(1.2.840.10045.3.1.7) =>
+                {
+                    crypto::SignatureScheme::EcdsaP256Sha256
+                }
+                (curve, crate::signature_hash_algorithm::HashAlgorithm::Sha256)
+                    if curve == oid!(1.3.132.0.34) =>
+                {
+                    crypto::SignatureScheme::EcdsaP384Sha256
+                }
+                (curve, crate::signature_hash_algorithm::HashAlgorithm::Sha384)
+                    if curve == oid!(1.3.132.0.34) =>
+                {
+                    crypto::SignatureScheme::EcdsaP384Sha384
+                }
+                _ => return Err(Error::ErrKeySignatureMismatch),
+            };
+            (PublicKeyEncoding::EcUncompressedPoint, scheme)
+        }
+        SignatureAlgorithm::Rsa if spki.algorithm.algorithm == oid!(1.2.840.113549.1.1.1) => {
+            let x509_parser::public_key::PublicKey::RSA(key) =
+                spki.parsed().map_err(|_| Error::ErrKeySignatureMismatch)?
+            else {
+                return Err(Error::ErrKeySignatureMismatch);
+            };
+            let modulus = key
+                .modulus
+                .iter()
+                .position(|byte| *byte != 0)
+                .map_or(&[][..], |start| &key.modulus[start..]);
+            let bits = modulus.first().map_or(0, |first| {
+                modulus.len() * 8 - first.leading_zeros() as usize
+            });
+            if bits > 8192 || bits < 1024 || (!insecure_verification && bits < 2048) {
+                return Err(Error::ErrKeySignatureMismatch);
+            }
+            (
+                PublicKeyEncoding::RsaPkcs1Der,
+                hash_algorithm.crypto_scheme()?,
+            )
+        }
+        _ => return Err(Error::ErrKeySignatureMismatch),
     };
 
     crypto
