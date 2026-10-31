@@ -515,8 +515,10 @@ impl RTCCertificate {
                 expires_pem.tag()
             )));
         }
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&expires_pem.contents()[..8]);
+        let bytes: [u8; 8] = expires_pem
+            .contents()
+            .try_into()
+            .map_err(|_| Error::InvalidPEM("EXPIRES must contain exactly eight bytes".into()))?;
         let expires = if let Some(e) =
             SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(u64::from_le_bytes(bytes)))
         {
@@ -982,6 +984,21 @@ mod test {
         )?;
         assert_eq!(imported, certificate);
         Ok(())
+    }
+
+    #[test]
+    fn malformed_expires_lengths_return_invalid_pem() {
+        let provider = crypto::default_provider().unwrap();
+        for length in (0..=7).chain([9, 16]) {
+            let block = pem::encode(&pem::Pem::new("EXPIRES", vec![1; length]));
+            assert!(
+                matches!(
+                    RTCCertificate::from_pem(&format!("{block}\n\n"), provider.crypto()),
+                    Err(Error::InvalidPEM(_))
+                ),
+                "EXPIRES length {length}"
+            );
+        }
     }
 
     #[test]
