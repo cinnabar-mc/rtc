@@ -1,5 +1,5 @@
 use crate::client::relay::Relay;
-use crate::client::{Client, Event};
+use crate::client::{BindingManager, BindingState, Client, Event, TransactionType};
 use shared::TaggedBytesMut;
 use shared::error::Error;
 use std::net::SocketAddr;
@@ -39,7 +39,14 @@ impl sansio::Protocol<TaggedBytesMut, TaggedBytesMut, ()> for Client {
     }
 
     fn handle_timeout(&mut self, now: Instant) -> Result<(), Self::Error> {
-        self.tr_map.handle_timeout(now);
+        for transaction in self.tr_map.handle_timeout(now) {
+            if let TransactionType::ChannelBindRequest(_, peer) = transaction
+                && let Some(binding) = self.binding_mgr.get_by_addr(&peer)
+            {
+                // A lost reply leaves the server mapping uncertain; retry the same channel.
+                binding.set_state(BindingState::Idle);
+            }
+        }
 
         #[allow(clippy::map_clone)]
         let relayed_addrs: Vec<SocketAddr> = self.relays.keys().map(|key| *key).collect();
@@ -79,8 +86,13 @@ impl sansio::Protocol<TaggedBytesMut, TaggedBytesMut, ()> for Client {
         eto
     }
 
+    /// Stops local relay activity; use `Relay::close` first to request server deallocation.
     fn close(&mut self) -> Result<(), Self::Error> {
         self.tr_map.delete_all();
+        self.relays.clear();
+        self.binding_mgr = BindingManager::new();
+        self.transmits.clear();
+        self.events.clear();
         Ok(())
     }
 }
