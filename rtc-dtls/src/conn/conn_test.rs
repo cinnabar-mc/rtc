@@ -3065,3 +3065,36 @@ fn reordered_finished_and_early_data_wait_for_ccs_and_authentication() {
         }
     }
 }
+
+#[test]
+fn plaintext_ccs_cannot_advance_an_established_cipher_epoch() {
+    let (mut client, mut server) = certificate_pair();
+    let now = Instant::now();
+    client.handshake(now).unwrap();
+    server.handshake(now).unwrap();
+    for _ in 0..8 {
+        deliver_records(&mut client, &mut server, now).unwrap();
+        deliver_records(&mut server, &mut client, now).unwrap();
+    }
+    assert!(server.is_handshake_completed());
+    for (index, body) in [vec![1], vec![0], vec![1, 0]].into_iter().enumerate() {
+        let header = RecordLayerHeader {
+            content_type: ContentType::ChangeCipherSpec,
+            protocol_version: PROTOCOL_VERSION1_2,
+            epoch: 1,
+            sequence_number: 1000 + index as u64,
+            content_len: body.len() as u16,
+        };
+        let mut raw = Vec::new();
+        header.marshal(&mut raw).unwrap();
+        raw.extend(body);
+        assert!(server.read(&raw).is_ok());
+        assert_eq!(server.state.remote_epoch, 1);
+    }
+    client.write(b"still authenticated").unwrap();
+    deliver_records(&mut client, &mut server, now).unwrap();
+    assert_eq!(
+        server.incoming_application_data().unwrap().as_ref(),
+        b"still authenticated"
+    );
+}

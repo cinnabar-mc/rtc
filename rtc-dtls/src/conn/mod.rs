@@ -617,6 +617,11 @@ impl DTLSConn {
             return (false, None, None);
         }
 
+        // Renegotiation is unsupported: CCS is exactly one plaintext epoch-zero byte.
+        if h.content_type == ContentType::ChangeCipherSpec && (h.epoch != 0 || h.content_len != 1) {
+            return (false, None, None);
+        }
+
         // Validate epoch
         let epoch = self.state.remote_epoch;
         if h.epoch > epoch {
