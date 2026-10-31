@@ -3,7 +3,10 @@ use crate::{
     SecretVec, StreamCipher, StreamCipherAlgorithm,
 };
 use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, KeyIvInit};
+use aes::cipher::{
+    BlockDecryptMut, BlockEncrypt, BlockEncryptMut, InnerIvInit, KeyInit, KeyIvInit,
+    block_padding::NoPadding,
+};
 use aes::{Aes128, Aes256};
 use ccm::Ccm;
 use ccm::aead::AeadInPlace;
@@ -140,9 +143,12 @@ pub(crate) fn new_cbc(
     key: &[u8],
 ) -> Result<Box<dyn CbcCipher>, CryptoError> {
     match algorithm {
-        CbcAlgorithm::Aes256Cbc => Ok(Box::new(AesCbc {
-            key: ExpandedAesKey::new_256(key)?,
-        })),
+        CbcAlgorithm::Aes256Cbc => {
+            check_key_len(32, key.len())?;
+            Ok(Box::new(AesCbc {
+                key: Aes256::new_from_slice(key).map_err(|_| invalid_key(32, key.len()))?,
+            }))
+        }
     }
 }
 
@@ -165,35 +171,6 @@ pub(crate) fn new_ccm(
         }
     };
     Ok(Box::new(cipher))
-}
-
-// Stores an expanded key inside an already boxed cipher object, avoiding another allocation in
-// every constructed state object. Only AES-256 is needed: `CbcAlgorithm` has a single variant,
-// and CTR now goes through the `ctr` crate.
-#[allow(clippy::large_enum_variant)]
-enum ExpandedAesKey {
-    Aes256(Aes256),
-}
-
-impl ExpandedAesKey {
-    fn new_256(key: &[u8]) -> Result<Self, CryptoError> {
-        check_key_len(32, key.len())?;
-        Ok(Self::Aes256(
-            Aes256::new_from_slice(key).map_err(|_| invalid_key(32, key.len()))?,
-        ))
-    }
-
-    fn encrypt(&self, block: &mut [u8; AES_BLOCK_LEN]) {
-        match self {
-            Self::Aes256(cipher) => cipher.encrypt_block(GenericArray::from_mut_slice(block)),
-        }
-    }
-
-    fn decrypt(&self, block: &mut [u8; AES_BLOCK_LEN]) {
-        match self {
-            Self::Aes256(cipher) => cipher.decrypt_block(GenericArray::from_mut_slice(block)),
-        }
-    }
 }
 
 /// AES counter mode.
@@ -237,7 +214,7 @@ impl StreamCipher for AesCtr {
 }
 
 struct AesCbc {
-    key: ExpandedAesKey,
+    key: Aes256,
 }
 
 impl CbcCipher for AesCbc {
@@ -248,39 +225,19 @@ impl CbcCipher for AesCbc {
     fn encrypt_blocks(&mut self, iv: &[u8], blocks: &mut [u8]) -> Result<(), CryptoError> {
         check_nonce_len(AES_BLOCK_LEN, iv.len())?;
         check_blocks(blocks)?;
-        let mut previous: [u8; AES_BLOCK_LEN] = iv
-            .try_into()
-            .map_err(|_| invalid_nonce(AES_BLOCK_LEN, iv.len()))?;
-
-        // `check_blocks` has already rejected a length that is not a whole number of blocks, so the
-        // remainder this returns is empty and the array chunks are the whole input.
-        for block in blocks.as_chunks_mut::<AES_BLOCK_LEN>().0 {
-            for (byte, prior) in block.iter_mut().zip(previous) {
-                *byte ^= prior;
-            }
-            self.key.encrypt(block);
-            previous = *block;
-        }
+        let length = blocks.len();
+        cbc::Encryptor::inner_iv_init(self.key.clone(), GenericArray::from_slice(iv))
+            .encrypt_padded_mut::<NoPadding>(blocks, length)
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
         Ok(())
     }
 
     fn decrypt_blocks(&mut self, iv: &[u8], blocks: &mut [u8]) -> Result<(), CryptoError> {
         check_nonce_len(AES_BLOCK_LEN, iv.len())?;
         check_blocks(blocks)?;
-        let mut previous: [u8; AES_BLOCK_LEN] = iv
-            .try_into()
-            .map_err(|_| invalid_nonce(AES_BLOCK_LEN, iv.len()))?;
-
-        for block in blocks.as_chunks_mut::<AES_BLOCK_LEN>().0 {
-            // The ciphertext masks the *next* block, so it has to be kept before decryption
-            // overwrites it in place.
-            let ciphertext = *block;
-            self.key.decrypt(block);
-            for (byte, prior) in block.iter_mut().zip(previous) {
-                *byte ^= prior;
-            }
-            previous = ciphertext;
-        }
+        cbc::Decryptor::inner_iv_init(self.key.clone(), GenericArray::from_slice(iv))
+            .decrypt_padded_mut::<NoPadding>(blocks)
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
         Ok(())
     }
 }
