@@ -386,6 +386,7 @@ mod tests {
     use super::*;
     use crate::cipher_suite::CipherSuiteId;
     use crate::config::ConfigBuilder;
+    #[cfg(feature = "crypto-ring")]
     use crate::conn::DEFAULT_MAXIMUM_RETRANSMIT_NUMBER;
     use crate::crypto::Certificate;
     use crypto::{CryptoError, RTCCrypto, RTCCryptoProvider, RTCRandom};
@@ -722,9 +723,8 @@ mod tests {
 
     /// Runs a full handshake to completion and returns both endpoints, drained of any pending
     /// transmit so a later assertion sees only newly generated output.
-    #[cfg(feature = "crypto-ring")]
     fn completed_client_and_server() -> Result<(Endpoint, Endpoint)> {
-        let provider: Arc<dyn RTCCryptoProvider> = Arc::new(crypto::providers::RingProvider::new());
+        let provider = crypto::default_provider().map_err(crate::crypto::crypto_error)?;
         let suites = [CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256];
         let client_config = config(provider.clone(), true, &suites)?;
         let server_config = config(provider, false, &suites)?;
