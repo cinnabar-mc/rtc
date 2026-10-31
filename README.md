@@ -1,3 +1,8 @@
+> This is Cinnabar's maintained fork of [webrtc-rs/rtc](https://github.com/webrtc-rs/rtc).
+> The `cinnabar` branch includes explicit TURN relay address families from
+> [cinnabar-mc/rtc-turn](https://github.com/cinnabar-mc/rtc-turn), along with transport
+> fixes and regression tests for NetherNet. The upstream licenses remain unchanged.
+
 <h1 align="center">
  <a href="https://webrtc.rs"><img src="https://raw.githubusercontent.com/webrtc-rs/webrtc-rs.github.io/master/res/rtc.png" alt="WebRTC.rs"></a>
  <br>

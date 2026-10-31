@@ -189,6 +189,7 @@ async fn run_main_loop(
         software: String::new(),
         rto_in_ms: 0,
         allocation_refresh_interval_cap: None,
+        requested_address_family: None,
     };
 
     // An application is the outside caller, so it selects the crypto provider explicitly.

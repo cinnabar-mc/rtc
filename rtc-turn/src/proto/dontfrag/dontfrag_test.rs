@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_dont_fragment_false() -> Result<()> {
-    let mut dont_fragment = DontFragmentAttr::default();
+    let mut dont_fragment = DontFragmentAttr;
 
     let mut m = Message::new();
     m.write_header();
@@ -13,7 +13,7 @@ fn test_dont_fragment_false() -> Result<()> {
 
 #[test]
 fn test_dont_fragment_add_to() -> Result<()> {
-    let mut dont_fragment = DontFragmentAttr::default();
+    let mut dont_fragment = DontFragmentAttr;
 
     let mut m = Message::new();
     dont_fragment.add_to(&mut m)?;

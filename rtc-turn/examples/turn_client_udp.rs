@@ -93,6 +93,7 @@ fn main() -> Result<()> {
         software: String::new(),
         rto_in_ms: 0,
         allocation_refresh_interval_cap: None,
+        requested_address_family: None,
     };
 
     // An application selects the crypto provider; library code never resolves a default.
@@ -156,10 +157,10 @@ fn main() -> Result<()> {
                         {
                             create_permission_tid = Some(id);
                         } else {
-                            assert!(false, "create_permission failed");
+                            panic!("create_permission failed");
                         }
                     } else {
-                        assert!(false, "relayed address is not none");
+                        panic!("relayed address is not none");
                     }
                 }
                 Event::AllocateError(_, err) => return Err(err),
@@ -168,9 +169,9 @@ fn main() -> Result<()> {
                     if let Some(id) = create_permission_tid {
                         assert_eq!(tid, id);
 
-                        do_ping_test(pinger.take(), relayed_addr.clone())
+                        do_ping_test(pinger.take(), relayed_addr)
                     } else {
-                        assert!(false, "create_permission_tid is none");
+                        panic!("create_permission_tid is none");
                     }
                 }
                 Event::CreatePermissionError(_, err) => return Err(err),
@@ -189,10 +190,10 @@ fn main() -> Result<()> {
         }
 
         let mut eto = Instant::now() + Duration::from_millis(100);
-        if let Some(to) = client.poll_timeout() {
-            if to < eto {
-                eto = to;
-            }
+        if let Some(to) = client.poll_timeout()
+            && to < eto
+        {
+            eto = to;
         }
 
         let delay_from_now = eto
@@ -225,18 +226,16 @@ fn main() -> Result<()> {
 
 fn read_socket_input(socket: &UdpSocket, buf: &mut [u8]) -> Option<TransportMessage<BytesMut>> {
     match socket.recv_from(buf) {
-        Ok((n, peer_addr)) => {
-            return Some(TransportMessage {
-                now: Instant::now(),
-                transport: TransportContext {
-                    local_addr: socket.local_addr().unwrap(),
-                    peer_addr,
-                    transport_protocol: TransportProtocol::UDP,
-                    ecn: None,
-                },
-                message: BytesMut::from(&buf[..n]),
-            });
-        }
+        Ok((n, peer_addr)) => Some(TransportMessage {
+            now: Instant::now(),
+            transport: TransportContext {
+                local_addr: socket.local_addr().unwrap(),
+                peer_addr,
+                transport_protocol: TransportProtocol::UDP,
+                ecn: None,
+            },
+            message: BytesMut::from(&buf[..n]),
+        }),
 
         Err(e) => match e.kind() {
             // Expected error for set_read_timeout(). One for windows, one for the rest.
@@ -270,7 +269,7 @@ fn do_ping_test(pinger: Option<UdpSocket>, relayed_addr: Option<RelayedAddr>) {
                     "sending {}th msg={} with size={} to {}",
                     i,
                     msg,
-                    msg.as_bytes().len(),
+                    msg.len(),
                     relayed_addr
                 );
                 pinger.send_to(msg.as_bytes(), relayed_addr).unwrap();

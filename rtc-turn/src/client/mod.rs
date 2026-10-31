@@ -9,6 +9,8 @@
 //! [`ReflexiveAddr`] is how the server sees this client, and [`PeerAddr`] is the far end.
 #[cfg(test)]
 mod client_test;
+#[cfg(test)]
+mod requested_family_test;
 
 /// Channel bindings, which replace the 36-byte Data indication header with a 4-byte one.
 pub mod binding;
@@ -45,6 +47,9 @@ use crate::proto::data::*;
 use crate::proto::lifetime::Lifetime;
 use crate::proto::peeraddr::*;
 use crate::proto::relayaddr::RelayedAddress;
+use crate::proto::reqfamily::{
+    REQUESTED_FAMILY_IPV4, REQUESTED_FAMILY_IPV6, RequestedAddressFamily,
+};
 use crate::proto::reqtrans::RequestedTransport;
 use shared::error::{Error, Result};
 use shared::util::lookup_host;
@@ -122,6 +127,10 @@ pub struct ClientConfig {
     pub local_addr: SocketAddr,
     /// Whether to reach the server over UDP or TCP.
     pub transport_protocol: TransportProtocol,
+    /// The relay allocation's family, independently of the transport used to reach TURN.
+    /// `None` or IPv4 omits the attribute and preserves the RFC 6156 IPv4 default.
+    /// Only the existing IPv4 and IPv6 family values are accepted.
+    pub requested_address_family: Option<RequestedAddressFamily>,
     /// The long-term credential username for the TURN server.
     pub username: String,
     /// The long-term credential password.
@@ -147,6 +156,7 @@ impl Default for ClientConfig {
             turn_serv_addr: "".to_string(),
             local_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
             transport_protocol: Default::default(),
+            requested_address_family: None,
             username: "".to_string(),
             password: "".to_string(),
             realm: "".to_string(),
@@ -164,6 +174,7 @@ pub struct Client {
     turn_serv_addr: Option<SocketAddr>,
     local_addr: SocketAddr,
     transport_protocol: TransportProtocol,
+    requested_address_family: Option<RequestedAddressFamily>,
     username: Username,
     password: String,
     realm: Realm,
@@ -183,6 +194,15 @@ impl Client {
     ///
     /// The crypto provider is supplied by the caller; this crate never resolves a default.
     pub fn new(config: ClientConfig, crypto_provider: Arc<dyn RTCCryptoProvider>) -> Result<Self> {
+        if config
+            .requested_address_family
+            .as_ref()
+            .is_some_and(|family| {
+                *family != REQUESTED_FAMILY_IPV4 && *family != REQUESTED_FAMILY_IPV6
+            })
+        {
+            return Err(Error::Other("invalid requested address family".into()));
+        }
         let stun_serv_addr = if config.stun_serv_addr.is_empty() {
             None
         } else {
@@ -207,6 +227,9 @@ impl Client {
             turn_serv_addr,
             local_addr: config.local_addr,
             transport_protocol: config.transport_protocol,
+            requested_address_family: config
+                .requested_address_family
+                .filter(|family| *family == REQUESTED_FAMILY_IPV6),
             username: Username::new(ATTR_USERNAME, config.username),
             password: config.password,
             realm: Realm::new(ATTR_REALM, config.realm),
@@ -589,11 +612,11 @@ impl Client {
         Ok(())
     }
 
-    /// Allocate sends a TURN allocation request to the given transport address
-    pub fn allocate(&mut self, now: Instant) -> Result<TransactionId> {
+    /// Builds the common UDP allocation prefix before authentication and fingerprinting.
+    fn allocation_request(&self, transaction_id: TransactionId) -> Result<Message> {
         let mut msg = Message::new();
         msg.build(&[
-            Box::new(TransactionId::new()),
+            Box::new(transaction_id),
             Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_REQUEST)),
             Box::new(RequestedTransport {
                 // Always a UDP relay, however the server is reached: REQUESTED-TRANSPORT
@@ -601,8 +624,17 @@ impl Client {
                 // (RFC 8656 §7.1). TCP allocations (RFC 6062) are not implemented here.
                 protocol: PROTO_UDP,
             }),
-            Box::new(FINGERPRINT),
         ])?;
+        if let Some(family) = &self.requested_address_family {
+            family.add_to(&mut msg)?;
+        }
+        Ok(msg)
+    }
+
+    /// Allocate sends a TURN allocation request to the given transport address
+    pub fn allocate(&mut self, now: Instant) -> Result<TransactionId> {
+        let mut msg = self.allocation_request(TransactionId::new())?;
+        FINGERPRINT.add_to(&mut msg)?;
 
         debug!("client.Allocate call PerformTransaction 1");
         let mut tid = self.perform_transaction(
@@ -648,29 +680,18 @@ impl Client {
                     self.crypto_provider.crypto(),
                 )?;
 
-                let mut msg = Message::new();
-
                 // make it same as allocate() return value so that client can retrieve it
                 // from Event::AllocateResponse
                 let mut tid = response.transaction_id;
                 tid.0[TRANSACTION_ID_SIZE - 1] = tid.0[TRANSACTION_ID_SIZE - 1].wrapping_add(1);
 
                 // Trying to authorize.
-                msg.build(&[
-                    Box::new(tid),
-                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_REQUEST)),
-                    Box::new(RequestedTransport {
-                        // Always a UDP relay, however the server is reached: REQUESTED-TRANSPORT
-                        // names what the allocation relays, not the client-to-server transport
-                        // (RFC 8656 §7.1). TCP allocations (RFC 6062) are not implemented here.
-                        protocol: PROTO_UDP,
-                    }),
-                    Box::new(self.username.clone()),
-                    Box::new(self.realm.clone()),
-                    Box::new(nonce.clone()),
-                    Box::new(integrity),
-                    Box::new(FINGERPRINT),
-                ])?;
+                let mut msg = self.allocation_request(tid)?;
+                self.username.add_to(&mut msg)?;
+                self.realm.add_to(&mut msg)?;
+                nonce.add_to(&mut msg)?;
+                integrity.add_to(&mut msg)?;
+                FINGERPRINT.add_to(&mut msg)?;
 
                 debug!("client.Allocate call PerformTransaction 2");
                 self.perform_transaction(
