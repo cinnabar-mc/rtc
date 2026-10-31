@@ -801,6 +801,15 @@ impl DTLSConn {
             return (false, None, None);
         }
 
+        // Ignore other handshake types until the initial ClientHello has been accepted.
+        if h.content_type == ContentType::Handshake
+            && !self.is_client
+            && self.state.handshake_recv_sequence == 0
+            && pkt.get(RECORD_LAYER_HEADER_SIZE) != Some(&(HandshakeType::ClientHello as u8))
+        {
+            return (false, None, None);
+        }
+
         let is_handshake = match self.fragment_buffer.push(&pkt) {
             Ok(is_handshake) => is_handshake,
             Err(err) => {
@@ -816,6 +825,7 @@ impl DTLSConn {
         };
         if is_handshake {
             self.replay_detector[h.epoch as usize].accept();
+            let mut decoded_handshake = false;
             while let Ok((out, epoch)) = self.fragment_buffer.pop() {
                 //log::debug!("Extension Debug: out.len()={}", out.len());
                 let mut reader = out.as_slice();
@@ -840,6 +850,7 @@ impl DTLSConn {
                     }
                 };
 
+                decoded_handshake = true;
                 self.cache.push(
                     out,
                     epoch,
@@ -849,7 +860,11 @@ impl DTLSConn {
                 );
             }
 
-            return (true, None, None);
+            return (
+                decoded_handshake || !self.fragment_buffer.is_empty(),
+                None,
+                None,
+            );
         }
 
         let mut reader = pkt.as_slice();

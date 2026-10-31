@@ -170,6 +170,11 @@ impl FragmentBuffer {
         Ok((content, epoch))
     }
 
+    /// Reports whether no retained handshake fragments remain.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
     /// Counts payload bytes and retained fragment storage separately.
     fn sizes(&self) -> (usize, usize) {
         self.cache

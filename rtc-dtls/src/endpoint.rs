@@ -476,6 +476,80 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn framing_invalid_complete_hello_does_not_allocate_an_association() -> Result<()> {
+        let cfg = config(
+            crypto::default_provider().unwrap(),
+            false,
+            &[CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256],
+        )?;
+        let mut server = Endpoint::new(server_addr(), TransportProtocol::UDP, Some(cfg));
+        // Reject an empty ClientHello and a different handshake type as the opening message.
+        for handshake_type in [1, 14] {
+            let data = plaintext_record_datagram(
+                22,
+                &[handshake_type, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                0,
+            );
+            let _ = server.read(Instant::now(), client_addr(), None, data);
+            assert_eq!(server.get_connections_keys().count(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framing_fragmented_initial_hello_keeps_its_association() -> Result<()> {
+        use crate::handshake::handshake_header::{HANDSHAKE_HEADER_LENGTH, HandshakeHeader};
+        use crate::record_layer::record_layer_header::{
+            RECORD_LAYER_HEADER_SIZE, RecordLayerHeader,
+        };
+        let provider = crypto::default_provider().unwrap();
+        let suites = [CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256];
+        let mut client = Endpoint::new(client_addr(), TransportProtocol::UDP, None);
+        client.connect(
+            Instant::now(),
+            server_addr(),
+            config(provider.clone(), true, &suites)?,
+            None,
+        )?;
+        let raw = client.poll_transmit().unwrap().message;
+        let mut reader = raw.as_ref();
+        let mut record_header = RecordLayerHeader::unmarshal(&mut reader)?;
+        let mut handshake_header = HandshakeHeader::unmarshal(&mut reader)?;
+        let body = &raw[RECORD_LAYER_HEADER_SIZE + HANDSHAKE_HEADER_LENGTH..];
+        let split = body.len() / 2;
+        let mut server = Endpoint::new(
+            server_addr(),
+            TransportProtocol::UDP,
+            Some(config(provider, false, &suites)?),
+        );
+        for (sequence, (offset, fragment)) in [(0, &body[..split]), (split, &body[split..])]
+            .into_iter()
+            .enumerate()
+        {
+            record_header.sequence_number = sequence as u64;
+            record_header.content_len = (HANDSHAKE_HEADER_LENGTH + fragment.len()) as u16;
+            handshake_header.fragment_offset = offset as u32;
+            handshake_header.fragment_length = fragment.len() as u32;
+            let mut encoded = vec![];
+            record_header.marshal(&mut encoded)?;
+            handshake_header.marshal(&mut encoded)?;
+            encoded.extend_from_slice(fragment);
+            server.read(
+                Instant::now(),
+                client_addr(),
+                None,
+                BytesMut::from(encoded.as_slice()),
+            )?;
+            assert_eq!(server.get_connections_keys().count(), 1);
+            if sequence == 0 {
+                assert!(server.poll_transmit().is_none());
+            }
+        }
+        assert!(server.poll_transmit().is_some());
+        Ok(())
+    }
+
     struct FailingRandom;
 
     impl RTCRandom for FailingRandom {

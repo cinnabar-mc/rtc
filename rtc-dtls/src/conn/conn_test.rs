@@ -2642,25 +2642,25 @@ fn test_handshake_rx_set_after_queue_processing() {
 
     assert!(conn.handshake_rx.is_none());
 
-    // A well-formed epoch-0 handshake record with a complete fragment
-    // (ClientHello stub) that the fragment_buffer will accept, causing
-    // handle_incoming_packet to return hs=true.
-    let fake_handshake_packet: Vec<u8> = vec![
-        0x16, // content_type: Handshake
-        0xfe, 0xfd, // protocol_version: DTLS 1.2
-        0x00, 0x00, // epoch: 0
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sequence_number: 0
-        0x00, 0x10, // content_len: 16
-        // Minimal handshake header
-        0x01, // handshake_type: ClientHello
-        0x00, 0x00, 0x04, // length: 4
-        0x00, 0x00, // message_sequence: 0
-        0x00, 0x00, 0x00, // fragment_offset: 0
-        0x00, 0x00, 0x04, // fragment_length: 4
-        0xfe, 0xfd, 0x00, 0x00, // body (version + dummy)
-    ];
-    conn.incoming_encrypted_packets
-        .push_back(fake_handshake_packet);
+    // Queue a valid ClientHello so decoding can signal handshake progress.
+    let hello = crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello {
+        version: PROTOCOL_VERSION1_2,
+        random: Default::default(),
+        cookie: vec![],
+        cipher_suites: vec![
+            crate::cipher_suite::CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256,
+        ],
+        compression_methods: crate::compression_methods::default_compression_methods(),
+        extensions: vec![],
+    };
+    let record = RecordLayer::new(
+        PROTOCOL_VERSION1_2,
+        0,
+        Content::Handshake(Handshake::new(HandshakeMessage::ClientHello(hello))),
+    );
+    let mut handshake_packet = vec![];
+    record.marshal(&mut handshake_packet).unwrap();
+    conn.incoming_encrypted_packets.push_back(handshake_packet);
 
     conn.handle_incoming_queued_packets().unwrap();
 
