@@ -18,7 +18,6 @@ const CRYPTO_GCM_NONCE_LENGTH: usize = 12;
 
 /// AES-GCM authenticated encryption for DTLS records, holding the per-direction keys.
 pub struct CryptoGcm {
-    provider: Arc<dyn RTCCryptoProvider>,
     local_gcm: Box<dyn AeadCipher>,
     remote_gcm: Box<dyn AeadCipher>,
     local_write_iv: Vec<u8>,
@@ -43,7 +42,6 @@ impl CryptoGcm {
             .new_aead(AeadAlgorithm::Aes128Gcm, remote_key)
             .map_err(crypto_error)?;
         Ok(CryptoGcm {
-            provider,
             local_gcm,
             local_write_iv: local_write_iv.to_vec(),
             remote_gcm,
@@ -62,10 +60,9 @@ impl CryptoGcm {
 
         let mut nonce = [0u8; CRYPTO_GCM_NONCE_LENGTH];
         nonce[..4].copy_from_slice(&self.local_write_iv[..4]);
-        self.provider
-            .random()
-            .fill(&mut nonce[4..])
-            .map_err(crypto_error)?;
+        // The epoch and record sequence are unique for the lifetime of these keys.
+        nonce[4..].copy_from_slice(&pkt_rlh.sequence_number.to_be_bytes());
+        nonce[4..6].copy_from_slice(&pkt_rlh.epoch.to_be_bytes());
 
         let additional_data = generate_aead_additional_data(pkt_rlh, payload.len());
 
@@ -151,6 +148,7 @@ mod tests {
     use super::*;
     use crate::record_layer::record_layer_header::PROTOCOL_VERSION1_2;
 
+    /// Encodes an application record for cipher tests.
     fn make_record(payload: &[u8]) -> (RecordLayerHeader, Vec<u8>) {
         let header = RecordLayerHeader {
             content_type: ContentType::ApplicationData,
@@ -163,6 +161,39 @@ mod tests {
         header.marshal(&mut raw).unwrap();
         raw.extend_from_slice(payload);
         (header, raw)
+    }
+
+    #[test]
+    fn framing_aead_nonces_use_record_numbers() {
+        use crate::crypto::crypto_ccm::{CryptoCcm, CryptoCcmTagLen};
+        let provider = crypto::default_provider().unwrap();
+        let mut gcm =
+            CryptoGcm::new(provider.clone(), &[7; 16], &[8; 4], &[7; 16], &[8; 4]).unwrap();
+        let mut ccm = CryptoCcm::new(
+            provider,
+            &CryptoCcmTagLen::CryptoCcmTagLength,
+            &[7; 16],
+            &[8; 4],
+            &[7; 16],
+            &[8; 4],
+        )
+        .unwrap();
+        for (epoch, sequence_number) in [(1, 1), (1, 2), (2, 0)] {
+            let (mut header, raw) = make_record(b"data");
+            header.epoch = epoch;
+            header.sequence_number = sequence_number;
+            let mut expected = sequence_number.to_be_bytes();
+            expected[..2].copy_from_slice(&epoch.to_be_bytes());
+            for encrypted in [
+                gcm.encrypt(&header, &raw).unwrap(),
+                ccm.encrypt(&header, &raw).unwrap(),
+            ] {
+                assert_eq!(
+                    &encrypted[RECORD_LAYER_HEADER_SIZE..RECORD_LAYER_HEADER_SIZE + 8],
+                    &expected
+                );
+            }
+        }
     }
 
     #[test]
