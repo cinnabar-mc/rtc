@@ -77,3 +77,25 @@ fn test_empty_handshake_message_certificate() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn certificate_entries_must_be_nonempty_and_stay_inside_the_list() {
+    for raw in [
+        vec![0, 0, 3, 0, 0, 0],
+        vec![0, 0, 1, 0, 0, 1, 7],
+        vec![0, 0, 4, 0, 0, 2, 7, 8],
+    ] {
+        assert!(
+            HandshakeMessageCertificate::unmarshal(&mut raw.as_slice()).is_err(),
+            "{raw:?}"
+        );
+    }
+    let empty_entry = HandshakeMessageCertificate {
+        certificate: vec![Vec::new()],
+    };
+    assert!(empty_entry.marshal(&mut Vec::new()).is_err());
+    let empty_list = HandshakeMessageCertificate {
+        certificate: Vec::new(),
+    };
+    assert!(empty_list.marshal(&mut Vec::new()).is_ok());
+}

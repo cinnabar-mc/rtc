@@ -39,6 +39,9 @@ impl HandshakeMessageCertificate {
     pub fn marshal<W: Write>(&self, writer: &mut W) -> Result<()> {
         let mut payload_size = 0;
         for r in &self.certificate {
+            if r.is_empty() {
+                return Err(Error::ErrLengthMismatch);
+            }
             payload_size += HANDSHAKE_MESSAGE_CERTIFICATE_LENGTH_FIELD_SIZE + r.len();
         }
 
@@ -65,16 +68,22 @@ impl HandshakeMessageCertificate {
         let mut certificate: Vec<Vec<u8>> = vec![];
 
         let payload_size = reader.read_u24::<BigEndian>()? as usize;
-        let mut offset = 0;
-        while offset < payload_size {
-            let certificate_len = reader.read_u24::<BigEndian>()? as usize;
-            offset += HANDSHAKE_MESSAGE_CERTIFICATE_LENGTH_FIELD_SIZE;
-
-            let mut buf = vec![0; certificate_len];
-            reader.read_exact(&mut buf)?;
-            offset += certificate_len;
-
-            certificate.push(buf);
+        let mut payload = Vec::new();
+        reader.take(payload_size as u64).read_to_end(&mut payload)?;
+        if payload.len() != payload_size {
+            return Err(Error::ErrLengthMismatch);
+        }
+        let mut remaining = payload.as_slice();
+        while !remaining.is_empty() {
+            if remaining.len() < HANDSHAKE_MESSAGE_CERTIFICATE_LENGTH_FIELD_SIZE {
+                return Err(Error::ErrLengthMismatch);
+            }
+            let certificate_len = remaining.read_u24::<BigEndian>()? as usize;
+            if certificate_len == 0 || certificate_len > remaining.len() {
+                return Err(Error::ErrLengthMismatch);
+            }
+            certificate.push(remaining[..certificate_len].to_vec());
+            remaining = &remaining[certificate_len..];
         }
 
         Ok(HandshakeMessageCertificate { certificate })
