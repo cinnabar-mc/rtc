@@ -187,7 +187,7 @@ impl DtlsTransport {
             return Err(Error::ErrInvalidDTLSStart);
         }
 
-        self.dtls_role = self.derive_role(ice_role, remote_dtls_parameters.role);
+        let dtls_role = self.derive_role(ice_role, remote_dtls_parameters.role);
 
         let remote_fingerprints = remote_dtls_parameters.fingerprints;
         // Leaving the callback out is what disables the check: `insecure_skip_verify` is
@@ -239,11 +239,9 @@ impl DtlsTransport {
         } else {
             return Err(Error::ErrNonCertificate);
         };
-        self.state_change(RTCDtlsTransportState::Connecting);
-
         let profiles = self.supported_srtp_protection_profiles()?;
 
-        Ok(Arc::new(
+        let config = Arc::new(
             ::dtls::config::ConfigBuilder::default()
                 .with_crypto_provider(self.crypto_provider.clone())
                 .with_certificates(vec![certificate])
@@ -256,8 +254,11 @@ impl DtlsTransport {
                 .with_verify_peer_certificate(verify_peer_certificate)
                 .with_extended_master_secret(::dtls::config::ExtendedMasterSecretType::Require)
                 .with_replay_protection_window(self.replay_protection.dtls)
-                .build(self.dtls_role == RTCDtlsRole::Client, None)?,
-        ))
+                .build(dtls_role == RTCDtlsRole::Client, None)?,
+        );
+        self.dtls_role = dtls_role;
+        self.state_change(RTCDtlsTransportState::Connecting);
+        Ok(config)
     }
 
     fn supported_srtp_protection_profiles(&self) -> Result<Vec<SrtpProtectionProfile>> {
@@ -469,12 +470,21 @@ mod tests {
         // This is the assertion that proves plumbing. PSK suites are filtered out when no
         // PSK is configured, leaving nothing usable. If `set_dtls_cipher_suites` were
         // dropped on the floor, the default set would be used and this would succeed.
-        let err = transport(vec![CipherSuiteId::Tls_Psk_With_Aes_128_Ccm])
+        let mut transport = transport(vec![CipherSuiteId::Tls_Psk_With_Aes_128_Ccm]);
+        let err = transport
             .prepare_transport(RTCIceRole::Controlling, remote_params())
             .expect_err("a PSK-only list with no PSK leaves no usable suite");
         assert!(
             err.to_string().contains("CipherSuite"),
             "expected a cipher-suite error, got: {err}"
+        );
+        assert_eq!(transport.state(), RTCDtlsTransportState::New);
+        assert!(!transport.is_started());
+        transport.dtls_cipher_suites.clear();
+        assert!(
+            transport
+                .start(RTCIceRole::Controlling, remote_params())
+                .is_ok()
         );
     }
 
@@ -507,10 +517,20 @@ mod tests {
             })
         };
 
-        let error = build(vec![SrtpProtectionProfile::Srtp_Aead_Aes_128_Gcm])?
+        let mut unsupported = build(vec![SrtpProtectionProfile::Srtp_Aead_Aes_128_Gcm])?;
+        let error = unsupported
             .prepare_transport(RTCIceRole::Controlling, remote_params())
             .expect_err("the provider's unsupported profile must not be advertised");
         assert!(error.to_string().contains("supports none"));
+        assert_eq!(unsupported.state(), RTCDtlsTransportState::New);
+        assert!(!unsupported.is_started());
+        unsupported.srtp_protection_profiles =
+            vec![SrtpProtectionProfile::Srtp_Aes128_Cm_Hmac_Sha1_80];
+        assert!(
+            unsupported
+                .start(RTCIceRole::Controlling, remote_params())
+                .is_ok()
+        );
 
         assert!(
             build(vec![
