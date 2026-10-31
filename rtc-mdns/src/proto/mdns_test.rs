@@ -63,7 +63,7 @@ fn test_multiple_close() {
 
     // After close, handle_read should return ErrConnectionClosed
     let msg = TaggedBytesMut {
-        now: now,
+        now,
         transport: TransportContext {
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 5353),
             peer_addr: MDNS_DEST_ADDR,

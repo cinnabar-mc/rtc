@@ -200,9 +200,9 @@ async fn run_requester(
         // Poll requester events
         while let Some(event) = requester.poll_event() {
             match event {
-                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(state)
-                    if state == RTCPeerConnectionState::Failed =>
-                {
+                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(
+                    RTCPeerConnectionState::Failed,
+                ) => {
                     eprintln!("Requester peer connection failed");
                     break 'EventLoop;
                 }
@@ -228,11 +228,11 @@ async fn run_requester(
         }
 
         // Requester: send data when channel is open and can send
-        if req_data_channel_opened.is_some() && req_can_send_more {
-            let channel_id = req_data_channel_opened.unwrap();
-            if let Some(mut dc) = requester.data_channel(channel_id) {
-                let _ = dc.send(Instant::now(), BytesMut::from(&send_buf[..]));
-            }
+        if let Some(channel_id) = req_data_channel_opened
+            && req_can_send_more
+            && let Some(mut dc) = requester.data_channel(channel_id)
+        {
+            let _ = dc.send(Instant::now(), BytesMut::from(&send_buf[..]));
         }
 
         // Get next timeout
@@ -358,9 +358,9 @@ async fn run_responder(
         // Poll responder events
         while let Some(event) = responder.poll_event() {
             match event {
-                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(state)
-                    if state == RTCPeerConnectionState::Failed =>
-                {
+                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(
+                    RTCPeerConnectionState::Failed,
+                ) => {
                     eprintln!("Responder peer connection failed");
                     break 'EventLoop;
                 }

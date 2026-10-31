@@ -159,7 +159,6 @@ async fn run(
             rtcp_feedback: vec![],
         },
         payload_type: 96,
-        ..Default::default()
     };
 
     // Register AV1 codec
@@ -313,19 +312,20 @@ async fn run(
         while let Some(TaggedRTCMessage { message, .. }) = peer_connection.poll_read() {
             match message {
                 RTCMessage::RtpPacket(track_id, rtp_packet) => {
-                    let receiver_id = track_id2_receiver_id
+                    let receiver_id = *track_id2_receiver_id
                         .get(&track_id)
-                        .ok_or(Error::ErrRTPReceiverNotExisted)?
-                        .clone();
+                        .ok_or(Error::ErrRTPReceiverNotExisted)?;
                     let rtp_receiver = peer_connection
                         .rtp_receiver(receiver_id)
                         .ok_or(Error::ErrRTPReceiverNotExisted)?;
                     let track = rtp_receiver.track();
 
                     // Record the track kind for this receiver on first packet
-                    if !receiver_id_to_kind.contains_key(&receiver_id) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        receiver_id_to_kind.entry(receiver_id)
+                    {
                         let kind = track.kind();
-                        receiver_id_to_kind.insert(receiver_id, kind);
+                        e.insert(kind);
 
                         let codec = track
                             .codec(
@@ -343,10 +343,10 @@ async fn run(
                     }
 
                     // Write video packet
-                    if let Some(RtpCodecKind::Video) = receiver_id_to_kind.get(&receiver_id) {
-                        if let Some(ref mut writer) = video_writer {
-                            writer.write_rtp(&rtp_packet)?;
-                        }
+                    if let Some(RtpCodecKind::Video) = receiver_id_to_kind.get(&receiver_id)
+                        && let Some(ref mut writer) = video_writer
+                    {
+                        writer.write_rtp(&rtp_packet)?;
                     }
                 }
                 RTCMessage::RtcpPacket(_, _) => {

@@ -45,7 +45,6 @@ fn video_codec(mime_type: &str, payload_type: u8, sdp_fmtp_line: &str) -> RTCRtp
             rtcp_feedback: vec![],
         },
         payload_type,
-        ..Default::default()
     }
 }
 
@@ -246,7 +245,7 @@ fn no_repair_group_without_a_repair_codec() {
     // unconditionally. Nothing repairs anything here, so neither group may appear.
     let vp8 = video_codec(MIME_TYPE_VP8, VP8_PT, "");
 
-    let offer = offer_for(video_media_engine(&[vp8.clone()]), &vp8);
+    let offer = offer_for(video_media_engine(std::slice::from_ref(&vp8)), &vp8);
     let sdp = &offer.sdp;
 
     assert_eq!(offer.rtx_ssrc, None, "{sdp}");
@@ -294,7 +293,7 @@ fn explicit_repair_ssrcs_are_dropped_without_a_repair_codec() {
     let vp8 = video_codec(MIME_TYPE_VP8, VP8_PT, "");
 
     let offer = offer_for_track(
-        video_media_engine(&[vp8.clone()]),
+        video_media_engine(std::slice::from_ref(&vp8)),
         video_track_with_repair_ssrcs(&vp8, Some(EXPLICIT_RTX_SSRC), Some(EXPLICIT_FEC_SSRC)),
     );
     let sdp = &offer.sdp;
@@ -361,7 +360,7 @@ fn sender_id_is_reachable_after_add_track() {
 
     let mut peer_connection = RTCPeerConnectionBuilder::new()
         .with_configuration(RTCConfigurationBuilder::new().build())
-        .with_media_engine(video_media_engine(&[vp8.clone()]))
+        .with_media_engine(video_media_engine(std::slice::from_ref(&vp8)))
         .build(Instant::now())
         .expect("build peer connection");
 

@@ -22,7 +22,7 @@ fn test_agent_process_in_transaction() -> Result<()> {
                 msg.transaction_id, tid
             );
         } else {
-            assert!(false, "got error: {:?}", e.evt);
+            panic!("got error: {:?}", e.evt);
         }
     }
 
@@ -46,7 +46,7 @@ fn test_agent_process() -> Result<()> {
                 msg.transaction_id, tid
             );
         } else {
-            assert!(false, "got error: {:?}", e.evt);
+            panic!("got error: {:?}", e.evt);
         }
     }
 

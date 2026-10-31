@@ -310,7 +310,7 @@ async fn run_broadcaster(
             match message {
                 RTCMessage::RtpPacket(track_id, rtp_packet) => {
                     packet_count += 1;
-                    if packet_count % 100 == 0 {
+                    if packet_count.is_multiple_of(100) {
                         debug!(
                             "[Receiver] Broadcasting RTP packet #{} from track_id {}",
                             packet_count, track_id
@@ -356,7 +356,7 @@ async fn run_broadcaster(
             res = event_rx.recv() => {
                 match res {
                     Some(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     None => {
                         eprintln!("[Receiver] event_rx closed");
@@ -570,7 +570,6 @@ async fn run_viewer(
     let _video_codec = RTCRtpCodecParameters {
         rtp_codec: rtp_codec.clone(),
         payload_type: 96,
-        ..Default::default()
     };
 
     let ssrc = rand::random::<u32>();
@@ -641,19 +640,18 @@ async fn run_viewer(
         }
 
         while let Some(event) = peer_connection.poll_event() {
-            match event {
-                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(peer_connection_state) => {
-                    println!(
-                        "[Viewer {}] Connection State: {}",
-                        viewer_id, peer_connection_state
-                    );
-                    if peer_connection_state == RTCPeerConnectionState::Failed
-                        || peer_connection_state == RTCPeerConnectionState::Closed
-                    {
-                        break 'EventLoop;
-                    }
+            if let RTCPeerConnectionEvent::OnConnectionStateChangeEvent(peer_connection_state) =
+                event
+            {
+                println!(
+                    "[Viewer {}] Connection State: {}",
+                    viewer_id, peer_connection_state
+                );
+                if peer_connection_state == RTCPeerConnectionState::Failed
+                    || peer_connection_state == RTCPeerConnectionState::Closed
+                {
+                    break 'EventLoop;
                 }
-                _ => {}
             }
         }
 
@@ -723,7 +721,7 @@ async fn run_viewer(
                                     }
                                 } else {
                                     sent_count += 1;
-                                    if sent_count % 100 == 0 {
+                                    if sent_count.is_multiple_of(100) {
                                         debug!("[Viewer {}] Sent {} packets", viewer_id, sent_count);
                                     }
                                 }
@@ -742,7 +740,7 @@ async fn run_viewer(
             res = event_rx.recv() => {
                 match res {
                     Some(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     None => break 'EventLoop,
                 }

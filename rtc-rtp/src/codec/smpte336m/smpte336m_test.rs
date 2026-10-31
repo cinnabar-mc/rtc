@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_smpte336m_payload_fragments_and_reassembles() -> Result<()> {
-    let mut pck = Smpte336mPayloader::default();
+    let mut pck = Smpte336mPayloader;
 
     const TEST_LEN: usize = 10000;
     const TEST_MTU: usize = 1400;
@@ -17,7 +17,7 @@ fn test_smpte336m_payload_fragments_and_reassembles() -> Result<()> {
         assert_eq!(payload.len(), TEST_MTU);
     }
 
-    let mut depkt = Smpte336mDepacketizer::default();
+    let mut depkt = Smpte336mDepacketizer;
     let mut reassembled = Vec::new();
     for payload in &payloads {
         reassembled.extend_from_slice(&depkt.depacketize(payload)?);
@@ -29,7 +29,7 @@ fn test_smpte336m_payload_fragments_and_reassembles() -> Result<()> {
 
 #[test]
 fn test_smpte336m_payload_empty_or_zero_mtu() -> Result<()> {
-    let mut pck = Smpte336mPayloader::default();
+    let mut pck = Smpte336mPayloader;
 
     let empty = Bytes::from_static(&[]);
     assert!(pck.payload(1400, &empty)?.is_empty());
@@ -42,7 +42,7 @@ fn test_smpte336m_payload_empty_or_zero_mtu() -> Result<()> {
 
 #[test]
 fn test_smpte336m_partition_boundaries_follow_marker_bit() {
-    let depkt = Smpte336mDepacketizer::default();
+    let depkt = Smpte336mDepacketizer;
     let payload = Bytes::from_static(&[0xab]);
 
     // No structural head marker exists in this payload format, so every packet is

@@ -104,7 +104,7 @@ mod tests {
         let mut msg = vec![0x40, 0x00];
         msg.extend_from_slice(&(data.len() as u16).to_be_bytes());
         msg.extend_from_slice(data);
-        while msg.len() % 4 != 0 {
+        while !msg.len().is_multiple_of(4) {
             msg.push(0);
         }
         msg

@@ -225,10 +225,10 @@ async fn main() -> Result<()> {
         if let Some(pc) = peer_connection.as_mut() {
             // Poll writes
             while let Some(msg) = pc.poll_write() {
-                if let Some(sock) = socket.as_ref() {
-                    if let Err(e) = sock.send_to(&msg.message, msg.transport.peer_addr).await {
-                        error!("Socket write error: {}", e);
-                    }
+                if let Some(sock) = socket.as_ref()
+                    && let Err(e) = sock.send_to(&msg.message, msg.transport.peer_addr).await
+                {
+                    error!("Socket write error: {}", e);
                 }
             }
 
@@ -276,14 +276,13 @@ async fn main() -> Result<()> {
             }
 
             // Send periodic messages through data channel
-            if let Some(channel_id) = data_channel_opened {
-                if Instant::now().duration_since(last_send) >= Duration::from_secs(3) {
-                    if let Some(mut dc) = pc.data_channel(channel_id) {
-                        let message = format!("{:?}", Instant::now());
-                        let _ = dc.send_text(Instant::now(), message);
-                        last_send = Instant::now();
-                    }
-                }
+            if let Some(channel_id) = data_channel_opened
+                && Instant::now().duration_since(last_send) >= Duration::from_secs(3)
+                && let Some(mut dc) = pc.data_channel(channel_id)
+            {
+                let message = format!("{:?}", Instant::now());
+                let _ = dc.send_text(Instant::now(), message);
+                last_send = Instant::now();
             }
 
             // Get next timeout
@@ -311,8 +310,8 @@ async fn main() -> Result<()> {
                         std::future::pending().await
                     }
                 } => {
-                    if let Ok((n, peer_addr)) = res {
-                        if let Some(local) = local_addr {
+                    if let Ok((n, peer_addr)) = res
+                        && let Some(local) = local_addr {
                             pc.handle_read(TaggedBytesMut {
                                 now: Instant::now(),
                                 transport: TransportContext {
@@ -324,7 +323,6 @@ async fn main() -> Result<()> {
                                 message: BytesMut::from(&buf[..n]),
                             }).ok();
                         }
-                    }
                 }
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {

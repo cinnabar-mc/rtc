@@ -28,7 +28,6 @@ use rtc::sansio::Protocol;
 use rtc::shared::error::Error;
 use rtc::shared::marshal::Marshal;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
-use signal;
 use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -93,7 +92,7 @@ pub struct RtcpForwarderInterceptor {
 }
 
 /// Whether an RTCP packet is a request for a keyframe.
-fn is_keyframe_request(packet: &Box<dyn rtc::rtcp::Packet>) -> bool {
+fn is_keyframe_request(packet: &dyn rtc::rtcp::Packet) -> bool {
     let payload = packet.as_any();
     payload.is::<PictureLossIndication>() || payload.is::<FullIntraRequest>()
 }
@@ -109,7 +108,7 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for RtcpForwarderInterceptor {
         if let Packet::Rtcp(packets) = &msg.message.packet {
             let requests: Vec<Box<dyn rtc::rtcp::Packet>> = packets
                 .iter()
-                .filter(|packet| is_keyframe_request(packet))
+                .filter(|packet| is_keyframe_request(packet.as_ref()))
                 .cloned()
                 .collect();
             if requests.is_empty() {
@@ -247,7 +246,6 @@ async fn run_peer_connection(
                 rtcp_feedback: vec![],
             },
             payload_type: 96,
-            ..Default::default()
         },
         RtpCodecKind::Video,
     )?;
@@ -263,7 +261,6 @@ async fn run_peer_connection(
                 rtcp_feedback: vec![],
             },
             payload_type: 111,
-            ..Default::default()
         },
         RtpCodecKind::Audio,
     )?;
@@ -470,7 +467,7 @@ async fn run_peer_connection(
             res = event_rx.recv() => {
                 match res {
                     Some(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     None => {
                         eprintln!("event_rx closed");

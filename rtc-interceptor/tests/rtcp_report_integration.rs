@@ -33,7 +33,6 @@ fn create_rtp_packet(ssrc: u32, seq: u16, timestamp: u32, payload_len: usize) ->
                 ..Default::default()
             },
             payload: payload.into(),
-            ..Default::default()
         })),
     }
 }
@@ -414,17 +413,16 @@ fn test_receiver_report_detects_packet_loss() {
                 if let Some(rr) = rtcp_pkt
                     .as_any()
                     .downcast_ref::<rtcp::receiver_report::ReceiverReport>()
+                    && !rr.reports.is_empty()
                 {
-                    if !rr.reports.is_empty() {
-                        let report = &rr.reports[0];
-                        // Should have detected lost packets (3, 4, 5, 6, 7 = 5 packets lost)
-                        assert!(
-                            report.total_lost > 0,
-                            "Should have detected packet loss, got total_lost={}",
-                            report.total_lost
-                        );
-                        return;
-                    }
+                    let report = &rr.reports[0];
+                    // Should have detected lost packets (3, 4, 5, 6, 7 = 5 packets lost)
+                    assert!(
+                        report.total_lost > 0,
+                        "Should have detected packet loss, got total_lost={}",
+                        report.total_lost
+                    );
+                    return;
                 }
             }
         }
@@ -494,18 +492,17 @@ fn test_combined_sender_and_receiver_interceptors() {
                 if let Some(sr) = rtcp_pkt
                     .as_any()
                     .downcast_ref::<rtcp::sender_report::SenderReport>()
+                    && sr.ssrc == local_ssrc
                 {
-                    if sr.ssrc == local_ssrc {
-                        sr_found = true;
-                    }
+                    sr_found = true;
                 }
                 if let Some(rr) = rtcp_pkt
                     .as_any()
                     .downcast_ref::<rtcp::receiver_report::ReceiverReport>()
+                    && !rr.reports.is_empty()
+                    && rr.reports[0].ssrc == remote_ssrc
                 {
-                    if !rr.reports.is_empty() && rr.reports[0].ssrc == remote_ssrc {
-                        rr_found = true;
-                    }
+                    rr_found = true;
                 }
             }
         }
@@ -655,15 +652,14 @@ fn test_receiver_processes_sender_report() {
                 if let Some(rr) = rtcp_pkt
                     .as_any()
                     .downcast_ref::<rtcp::receiver_report::ReceiverReport>()
+                    && !rr.reports.is_empty()
                 {
-                    if !rr.reports.is_empty() {
-                        let report = &rr.reports[0];
-                        assert_eq!(report.ssrc, remote_ssrc);
-                        // LSR should reflect the middle 32 bits of NTP time from SR
-                        // NTP time was 0x0001000200030004, so LSR = 0x00020003
-                        assert_eq!(report.last_sender_report, 0x00020003);
-                        return;
-                    }
+                    let report = &rr.reports[0];
+                    assert_eq!(report.ssrc, remote_ssrc);
+                    // LSR should reflect the middle 32 bits of NTP time from SR
+                    // NTP time was 0x0001000200030004, so LSR = 0x00020003
+                    assert_eq!(report.last_sender_report, 0x00020003);
+                    return;
                 }
             }
         }

@@ -202,7 +202,6 @@ async fn test_play_from_disk_rtc_set_remote_before_add_track() -> Result<()> {
             rtcp_feedback: vec![],
         },
         payload_type: 120,
-        ..Default::default()
     };
 
     let video_codec = RTCRtpCodecParameters {
@@ -214,7 +213,6 @@ async fn test_play_from_disk_rtc_set_remote_before_add_track() -> Result<()> {
             rtcp_feedback: vec![],
         },
         payload_type: 96,
-        ..Default::default()
     };
 
     media_engine.register_codec(audio_codec.clone(), RtpCodecKind::Audio)?;

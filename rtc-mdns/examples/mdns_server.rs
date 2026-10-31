@@ -49,12 +49,11 @@ fn get_local_ip() -> Option<Ipv4Addr> {
     // This is a simple heuristic - in production you'd want to be more careful
     if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
         // Connect to a public address to determine the local interface
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = socket.local_addr() {
-                if let IpAddr::V4(ip) = addr.ip() {
-                    return Some(ip);
-                }
-            }
+        if socket.connect("8.8.8.8:80").is_ok()
+            && let Ok(addr) = socket.local_addr()
+            && let IpAddr::V4(ip) = addr.ip()
+        {
+            return Some(ip);
         }
     }
     None

@@ -3113,13 +3113,12 @@ mod tests {
             }
             let mut handler = SctpHandler::new(&mut ctx, 0);
             while let Some(message) = handler.poll_write() {
-                if let RTCMessageInternal::Dtls(DTLSMessage::Raw(raw)) = message.message {
-                    if let Some((handle, DatagramEvent::AssociationEvent(event))) =
+                if let RTCMessageInternal::Dtls(DTLSMessage::Raw(raw)) = message.message
+                    && let Some((handle, DatagramEvent::AssociationEvent(event))) =
                         e.client_ep.handle(now, server_addr(), None, raw.freeze())
-                    {
-                        assert_eq!(handle, replacement_handle);
-                        replacement.handle_event(event);
-                    }
+                {
+                    assert_eq!(handle, replacement_handle);
+                    replacement.handle_event(event);
                 }
             }
             if !replacement.is_handshaking() {

@@ -746,9 +746,7 @@ fn test_message_marshal_binary() -> Result<()> {
 
     // Reset data to check retention.
     #[allow(clippy::needless_range_loop)]
-    for i in 0..data.len() {
-        data[i] = 0;
-    }
+    data.fill(0);
 
     m.decode()?;
 

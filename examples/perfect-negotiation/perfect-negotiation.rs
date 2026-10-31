@@ -61,6 +61,10 @@ static INDEX: &str = "examples/perfect-negotiation/index.html";
 /// Signaling message types exchanged between peers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The signaling DTO follows the JSON description and candidate payloads directly."
+)]
 enum SignalingMessage {
     #[serde(rename = "description")]
     Description { description: RTCSessionDescription },
@@ -166,8 +170,7 @@ impl PerfectNegotiationHandler {
 
             // Create rollback description (empty SDP per WebRTC spec)
             let mut rollback = RTCSessionDescription::default();
-            rollback.sdp_type = RTCSdpType::Rollback;
-            rollback.sdp = String::new(); // Spec: SDP omitted or empty for rollback
+            rollback.sdp_type = RTCSdpType::Rollback; // Spec: SDP omitted or empty for rollback
 
             self.pc.set_local_description(Instant::now(), rollback)?;
 
@@ -521,16 +524,13 @@ async fn run_peer(
                             negotiation.update_signaling_state(state);
                             info!("[{}] Signaling state: {:?}", role, state);
                         }
-                        RTCPeerConnectionEvent::OnDataChannel(dc_event) => {
-                            match dc_event {
-                                RTCDataChannelEvent::OnOpen(channel_id) => {
-                                    data_channel_id = Some(channel_id);
-                                    if let Some(dc) = negotiation.peer_connection().data_channel(channel_id) {
-                                        info!("[{}] Data channel '{}-{}' opened", role, dc.label(), dc.id());
-                                    }
+                        RTCPeerConnectionEvent::OnDataChannel(RTCDataChannelEvent::OnOpen(channel_id)) => {
+
+                                data_channel_id = Some(channel_id);
+                                if let Some(dc) = negotiation.peer_connection().data_channel(channel_id) {
+                                    info!("[{}] Data channel '{}-{}' opened", role, dc.label(), dc.id());
                                 }
-                                _ => {}
-                            }
+
                         }
                         _ => {}
                     }
@@ -581,20 +581,17 @@ async fn run_peer(
 
                 // Poll read (data channel messages)
                 while let Some(TaggedRTCMessage { message, .. }) = negotiation.peer_connection().poll_read() {
-                    match message {
-                        RTCMessage::DataChannelMessage(channel_id, data_channel_message) => {
-                            let msg_str = String::from_utf8(data_channel_message.data.to_vec())
-                                .unwrap_or_default();
-                            info!("[{}] Received on channel {}: {}", role, channel_id, msg_str);
+                    if let RTCMessage::DataChannelMessage(channel_id, data_channel_message) = message {
+                        let msg_str = String::from_utf8(data_channel_message.data.to_vec())
+                            .unwrap_or_default();
+                        info!("[{}] Received on channel {}: {}", role, channel_id, msg_str);
 
-                            // Send to browser
-                            let data_msg = serde_json::json!({
-                                "type": "data",
-                                "message": msg_str
-                            });
-                            ws.send(Message::Text(serde_json::to_string(&data_msg)?.into())).await.ok();
-                        }
-                        _ => {}
+                        // Send to browser
+                        let data_msg = serde_json::json!({
+                            "type": "data",
+                            "message": msg_str
+                        });
+                        ws.send(Message::Text(serde_json::to_string(&data_msg)?.into())).await.ok();
                     }
                 }
 
@@ -659,13 +656,11 @@ async fn run_peer(
                                 SignalingMessage::Message { message } => {
                                     info!("[{}] Received message from browser: {}", role, message);
                                     // Send message through data channel if open
-                                    if let Some(ch_id) = data_channel_id {
-                                        if let Some(mut dc) = negotiation.peer_connection().data_channel(ch_id) {
-                                            if let Err(e) = dc.send_text(Instant::now(), message) {
+                                    if let Some(ch_id) = data_channel_id
+                                        && let Some(mut dc) = negotiation.peer_connection().data_channel(ch_id)
+                                            && let Err(e) = dc.send_text(Instant::now(), message) {
                                                 error!("[{}] Failed to send message: {}", role, e);
                                             }
-                                        }
-                                    }
                                 }
                             }
                         }

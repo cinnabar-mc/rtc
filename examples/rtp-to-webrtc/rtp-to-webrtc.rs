@@ -24,7 +24,6 @@ use rtc::sansio::Protocol;
 use rtc::shared::error::Error;
 use rtc::shared::marshal::Unmarshal;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
-use signal;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::str::FromStr;

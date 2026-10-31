@@ -126,6 +126,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This example keeps each independent input explicit at its entry point."
+)]
 async fn run(
     mut stop_rx: broadcast::Receiver<()>,
     mut message_rx: broadcast::Receiver<RTCMessage>,
@@ -283,14 +287,11 @@ async fn run(
                 }
                 RTCPeerConnectionEvent::OnDataChannel(data_channel_event) => {
                     println!("OnDataChannel event: {:?}", data_channel_event);
-                    match data_channel_event {
-                        RTCDataChannelEvent::OnOpen(channel_id) => {
-                            let dc = peer_connection
-                                .data_channel(channel_id)
-                                .ok_or(Error::ErrDataChannelClosed)?;
-                            println!("Data channel '{}'-'{}' open", dc.label(), dc.id());
-                        }
-                        _ => {}
+                    if let RTCDataChannelEvent::OnOpen(channel_id) = data_channel_event {
+                        let dc = peer_connection
+                            .data_channel(channel_id)
+                            .ok_or(Error::ErrDataChannelClosed)?;
+                        println!("Data channel '{}'-'{}' open", dc.label(), dc.id());
                     }
                 }
                 _ => {}
@@ -343,7 +344,7 @@ async fn run(
             res = message_rx.recv() => {
                 match res {
                     Ok(message) => {
-                        peer_connection.handle_write(TaggedRTCMessage { now: Instant::now(), message: message })?;
+                        peer_connection.handle_write(TaggedRTCMessage { now: Instant::now(), message })?;
                     }
                     Err(err) => {
                         eprintln!("write_rx error: {}", err);
@@ -354,7 +355,7 @@ async fn run(
             res = event_rx.recv() => {
                 match res {
                     Ok(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     Err(err) => {
                         eprintln!("event_rx error: {}", err);

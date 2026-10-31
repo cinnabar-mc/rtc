@@ -265,21 +265,20 @@ async fn run_main_loop(
             }
 
             // Send periodic messages through data channel (every 3 seconds)
-            if let Some(channel_id) = data_channel_id {
-                if Instant::now().duration_since(last_send) >= Duration::from_secs(3) {
-                    if let Some(mut dc) = pc.data_channel(channel_id) {
-                        let message = chrono::Local::now().to_string();
-                        if let Err(e) = dc.send_text(Instant::now(), message) {
-                            println!(
-                                "{} - DataChannel closed, stopping send loop: {}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                e
-                            );
-                            data_channel_id = None;
-                        }
-                        last_send = Instant::now();
-                    }
+            if let Some(channel_id) = data_channel_id
+                && Instant::now().duration_since(last_send) >= Duration::from_secs(3)
+                && let Some(mut dc) = pc.data_channel(channel_id)
+            {
+                let message = chrono::Local::now().to_string();
+                if let Err(e) = dc.send_text(Instant::now(), message) {
+                    println!(
+                        "{} - DataChannel closed, stopping send loop: {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        e
+                    );
+                    data_channel_id = None;
                 }
+                last_send = Instant::now();
             }
 
             // Get next timeout
