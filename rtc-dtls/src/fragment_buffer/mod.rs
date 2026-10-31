@@ -9,8 +9,9 @@ use shared::error::*;
 use std::collections::HashMap;
 use std::io::{BufWriter, Cursor};
 
-// 2 mb max buffer size
+// Preserve the 2 MB payload budget and separately bound retained fragment metadata.
 const FRAGMENT_BUFFER_MAX_SIZE: usize = 2_000_000;
+const FRAGMENT_BUFFER_MAX_RETAINED_SIZE: usize = 2 * FRAGMENT_BUFFER_MAX_SIZE;
 
 pub(crate) struct Fragment {
     record_layer_header: RecordLayerHeader,
@@ -22,7 +23,7 @@ pub(crate) struct FragmentBuffer {
     // map of MessageSequenceNumbers that hold slices of fragments
     cache: HashMap<u16, Vec<Fragment>>,
 
-    current_message_sequence_number: u16,
+    current_message_sequence_number: u32,
 }
 
 impl FragmentBuffer {
@@ -37,14 +38,6 @@ impl FragmentBuffer {
     // when it returns true it means the FragmentBuffer has inserted and the buffer shouldn't be handled
     // when an error returns it is fatal, and the DTLS connection should be stopped
     pub fn push(&mut self, mut buf: &[u8]) -> Result<bool> {
-        let current_size = self.size();
-        if current_size + buf.len() >= FRAGMENT_BUFFER_MAX_SIZE {
-            return Err(Error::ErrFragmentBufferOverflow {
-                new_size: current_size + buf.len(),
-                max_size: FRAGMENT_BUFFER_MAX_SIZE,
-            });
-        }
-
         let mut reader = Cursor::new(buf);
         let record_layer_header = RecordLayerHeader::unmarshal(&mut reader)?;
 
@@ -58,27 +51,68 @@ impl FragmentBuffer {
             let mut reader = Cursor::new(buf);
             let handshake_header = HandshakeHeader::unmarshal(&mut reader)?;
 
-            self.cache
-                .entry(handshake_header.message_sequence)
-                .or_default();
-
-            // end index should be the length of handshake header but if the handshake
-            // was fragmented, we should keep them all
-            let mut end = HANDSHAKE_HEADER_LENGTH + handshake_header.length as usize;
-            if end > buf.len() {
-                end = buf.len();
+            let end = HANDSHAKE_HEADER_LENGTH + handshake_header.fragment_length as usize;
+            let offset = handshake_header.fragment_offset as usize;
+            let length = handshake_header.length as usize;
+            if end > buf.len() || offset + handshake_header.fragment_length as usize > length {
+                return Err(Error::ErrLengthMismatch);
             }
-
-            // Discard all headers, when rebuilding the packet we will re-build
-            let data = buf[HANDSHAKE_HEADER_LENGTH..end].to_vec();
-
-            if let Some(x) = self.cache.get_mut(&handshake_header.message_sequence) {
-                x.push(Fragment {
-                    record_layer_header,
-                    handshake_header,
-                    data,
+            let data = &buf[HANDSHAKE_HEADER_LENGTH..end];
+            let sequence = handshake_header.message_sequence;
+            if (sequence as u32) < self.current_message_sequence_number
+                || (data.is_empty() && length != 0)
+            {
+                buf = &buf[end..];
+                continue;
+            }
+            if let Some(fragments) = self.cache.get(&sequence) {
+                let mut redundant = false;
+                for fragment in fragments {
+                    if fragment.handshake_header.length != handshake_header.length
+                        || fragment.handshake_header.handshake_type
+                            != handshake_header.handshake_type
+                        || fragment.record_layer_header.epoch != record_layer_header.epoch
+                    {
+                        return Err(Error::ErrLengthMismatch);
+                    }
+                    let start = fragment.handshake_header.fragment_offset as usize;
+                    let overlap_start = start.max(offset);
+                    let overlap_end = (start + fragment.data.len()).min(offset + data.len());
+                    if overlap_start < overlap_end
+                        && fragment.data[overlap_start - start..overlap_end - start]
+                            != data[overlap_start - offset..overlap_end - offset]
+                    {
+                        return Err(Error::ErrLengthMismatch);
+                    }
+                    if start <= offset && start + fragment.data.len() >= offset + data.len() {
+                        // This range is already retained, including repeated empty messages.
+                        redundant = true;
+                        break;
+                    }
+                }
+                if redundant {
+                    buf = &buf[end..];
+                    continue;
+                }
+            }
+            let (payload_size, retained_size) = self.sizes();
+            let new_size = retained_size + data.len() + std::mem::size_of::<Fragment>();
+            let new_payload_size = payload_size + data.len();
+            if new_payload_size > FRAGMENT_BUFFER_MAX_SIZE
+                || new_size > FRAGMENT_BUFFER_MAX_RETAINED_SIZE
+            {
+                return Err(Error::ErrFragmentBufferOverflow {
+                    new_size,
+                    max_size: FRAGMENT_BUFFER_MAX_RETAINED_SIZE,
                 });
             }
+            let fragments = self.cache.entry(sequence).or_default();
+            fragments.push(Fragment {
+                record_layer_header,
+                handshake_header,
+                data: data.to_vec(),
+            });
+            fragments.sort_unstable_by_key(|fragment| fragment.handshake_header.fragment_offset);
             buf = &buf[end..];
         }
 
@@ -86,15 +120,26 @@ impl FragmentBuffer {
     }
 
     pub fn pop(&mut self) -> Result<(Vec<u8>, u16)> {
-        let seq_num = self.current_message_sequence_number;
+        let seq_num = u16::try_from(self.current_message_sequence_number)
+            .map_err(|_| Error::ErrEmptyFragment)?;
         if !self.cache.contains_key(&seq_num) {
             return Err(Error::ErrEmptyFragment);
         }
 
         let (content, epoch) = if let Some(frags) = self.cache.get_mut(&seq_num) {
             let mut raw_message = vec![];
-            // Recursively collect up
-            if !append_message(0, frags, &mut raw_message) {
+            for fragment in frags.iter() {
+                let offset = fragment.handshake_header.fragment_offset as usize;
+                if offset > raw_message.len() {
+                    return Err(Error::ErrEmptyFragment);
+                }
+                let skip = raw_message
+                    .len()
+                    .saturating_sub(offset)
+                    .min(fragment.data.len());
+                raw_message.extend_from_slice(&fragment.data[skip..]);
+            }
+            if raw_message.len() != frags[0].handshake_header.length as usize {
                 return Err(Error::ErrEmptyFragment);
             }
 
@@ -125,36 +170,21 @@ impl FragmentBuffer {
         Ok((content, epoch))
     }
 
-    fn size(&self) -> usize {
+    /// Counts payload bytes and retained fragment storage separately.
+    fn sizes(&self) -> (usize, usize) {
         self.cache
             .values()
-            .map(|fragment| fragment.iter().map(|f| f.data.len()).sum::<usize>())
-            .sum()
-    }
-}
-
-fn append_message(target_offset: u32, frags: &[Fragment], raw_message: &mut Vec<u8>) -> bool {
-    for f in frags {
-        if f.handshake_header.fragment_offset == target_offset {
-            let fragment_end =
-                f.handshake_header.fragment_offset + f.handshake_header.fragment_length;
-
-            // NB: Order here is important, the `f.handshake_header.fragment_length != 0`
-            // MUST come before the recursive call.
-            if fragment_end != f.handshake_header.length
-                && f.handshake_header.fragment_length != 0
-                && !append_message(fragment_end, frags, raw_message)
-            {
-                return false;
-            }
-
-            let mut message = vec![];
-            message.extend_from_slice(&f.data);
-            message.extend_from_slice(raw_message);
-            *raw_message = message;
-            return true;
-        }
+            .flatten()
+            .fold((0, 0), |(payload, retained), fragment| {
+                (
+                    payload + fragment.data.len(),
+                    retained + fragment.data.len() + std::mem::size_of::<Fragment>(),
+                )
+            })
     }
 
-    false
+    #[cfg(test)]
+    fn size(&self) -> usize {
+        self.sizes().1
+    }
 }
