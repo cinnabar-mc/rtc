@@ -110,9 +110,9 @@ impl Certificate {
                 pems.len()
             )));
         }
-        if pems[0].tag() != "PRIVATE_KEY" {
+        if !matches!(pems[0].tag(), "PRIVATE KEY" | "PRIVATE_KEY") {
             return Err(Error::InvalidPEM(format!(
-                "invalid tag (expected: 'PRIVATE_KEY', got: '{}')",
+                "invalid tag (expected: 'PRIVATE KEY', got: '{}')",
                 pems[0].tag()
             )));
         }
@@ -153,7 +153,7 @@ impl Certificate {
             .map_err(crypto_error)?
             .ok_or_else(|| Error::Other("the certificate signing key is not exportable".into()))?;
         let mut data = vec![pem::Pem::new(
-            "PRIVATE_KEY".to_string(),
+            "PRIVATE KEY".to_string(),
             private_key.as_ref(),
         )];
         for rustls_cert in &self.certificate {
@@ -530,6 +530,17 @@ pub(crate) fn generate_aead_additional_data(h: &RecordLayerHeader, payload_len: 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn framing_standard_pkcs8_pem() -> Result<()> {
+        let provider = crypto::default_provider().map_err(crypto_error)?;
+        let cert =
+            Certificate::generate_self_signed(vec!["localhost".to_owned()], provider.crypto())?;
+        let standard = cert.serialize_pem()?.replace("PRIVATE_KEY", "PRIVATE KEY");
+        assert_eq!(Certificate::from_pem(&standard, provider.crypto())?, cert);
+        assert!(cert.serialize_pem()?.contains("BEGIN PRIVATE KEY"));
+        Ok(())
+    }
 
     #[test]
     fn test_certificate_serialize_pem_and_from_pem() -> Result<()> {
