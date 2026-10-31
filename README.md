@@ -3,6 +3,14 @@
 > [cinnabar-mc/rtc-turn](https://github.com/cinnabar-mc/rtc-turn), along with transport
 > fixes and regression tests for NetherNet. The upstream licenses remain unchanged.
 
+The maintained divergences are:
+
+- Explicit TURN relay address families, independently of the server transport.
+- DTLS client Finished authentication, bounded handshake caching and record validation.
+- Cookie-hello negotiation, paced cookie retries, and certificate/signature policy checks.
+- ICE peer-reflexive priority on connectivity checks and nomination.
+- Authenticated SCTP peer restarts that preserve open streams and retire old queued writes.
+
 <h1 align="center">
  <a href="https://webrtc.rs"><img src="https://raw.githubusercontent.com/webrtc-rs/webrtc-rs.github.io/master/res/rtc.png" alt="WebRTC.rs"></a>
  <br>

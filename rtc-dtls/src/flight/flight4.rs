@@ -976,4 +976,42 @@ mod tests {
         let res = f.parse(&mut state, &cache, &cfg);
         assert!(res.is_err());
     }
+
+    #[test]
+    fn unsolicited_client_certificate_is_rejected_before_signature_processing() {
+        use crate::handshake::handshake_message_client_key_exchange::HandshakeMessageClientKeyExchange;
+        let provider = crypto::default_provider().unwrap();
+        let cfg = HandshakeConfig::new(provider.clone());
+        let mut state = State::new(provider, false);
+        let mut cache = HandshakeCache::new();
+        for (sequence, message) in [
+            HandshakeMessage::Certificate(HandshakeMessageCertificate {
+                certificate: vec![vec![1]],
+            }),
+            HandshakeMessage::ClientKeyExchange(HandshakeMessageClientKeyExchange {
+                identity_hint: Vec::new(),
+                public_key: vec![2, 3],
+            }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let typ = message.handshake_type();
+            let mut handshake = Handshake::new(message);
+            handshake.handshake_header.message_sequence = sequence as u16;
+            let mut raw = Vec::new();
+            handshake.marshal(&mut raw).unwrap();
+            cache.push(raw, 0, sequence as u16, typ, true);
+        }
+        assert!(matches!(
+            Flight4.parse(&mut state, &cache, &cfg),
+            Err((
+                Some(Alert {
+                    alert_description: AlertDescription::UnexpectedMessage,
+                    ..
+                }),
+                _
+            ))
+        ));
+    }
 }
