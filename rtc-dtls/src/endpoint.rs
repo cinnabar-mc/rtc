@@ -47,6 +47,23 @@ pub struct Endpoint {
     server_config: Option<Arc<HandshakeConfig>>,
 }
 
+/// Drains ready datagrams before reporting a later output failure.
+fn drain_conn(
+    conn: &mut DTLSConn,
+    transmits: &mut VecDeque<TransportMessage<BytesMut>>,
+    now: Instant,
+    transport: TransportContext,
+) -> Result<()> {
+    while let Some(payload) = conn.outgoing_raw_packet()? {
+        transmits.push_back(TransportMessage {
+            now,
+            transport,
+            message: payload,
+        });
+    }
+    Ok(())
+}
+
 impl Endpoint {
     /// Create a new endpoint
     ///
@@ -104,20 +121,21 @@ impl Endpoint {
 
         if let Vacant(e) = self.connections.entry(remote) {
             let mut conn = DTLSConn::new(client_config, true, initial_state);
-            conn.handshake(now)?;
+            conn.handshake(now).inspect_err(|_| {
+                conn.current_handshake_state = crate::handshaker::HandshakeState::Errored
+            })?;
 
-            while let Some(payload) = conn.outgoing_raw_packet() {
-                self.transmits.push_back(TransportMessage {
-                    now,
-                    transport: TransportContext {
-                        local_addr: self.local_addr,
-                        peer_addr: remote,
-                        ecn: None,
-                        transport_protocol: self.transport_protocol,
-                    },
-                    message: payload,
-                });
-            }
+            drain_conn(
+                &mut conn,
+                &mut self.transmits,
+                now,
+                TransportContext {
+                    local_addr: self.local_addr,
+                    peer_addr: remote,
+                    ecn: None,
+                    transport_protocol: self.transport_protocol,
+                },
+            )?;
 
             e.insert(conn);
         }
@@ -133,18 +151,17 @@ impl Endpoint {
     pub fn stop(&mut self, now: Instant, remote: SocketAddr) -> Option<DTLSConn> {
         if let Some(conn) = self.connections.get_mut(&remote) {
             conn.close();
-            while let Some(payload) = conn.outgoing_raw_packet() {
-                self.transmits.push_back(TransportMessage {
-                    now,
-                    transport: TransportContext {
-                        local_addr: self.local_addr,
-                        peer_addr: remote,
-                        ecn: None,
-                        transport_protocol: self.transport_protocol,
-                    },
-                    message: payload,
-                });
-            }
+            let _ = drain_conn(
+                conn,
+                &mut self.transmits,
+                now,
+                TransportContext {
+                    local_addr: self.local_addr,
+                    peer_addr: remote,
+                    ecn: None,
+                    transport_protocol: self.transport_protocol,
+                },
+            );
         }
         self.connections.remove(&remote)
     }
@@ -153,29 +170,29 @@ impl Endpoint {
     ///
     /// `now` stamps the close_notify queued for every live association.
     pub fn close(&mut self, now: Instant) -> Result<()> {
+        let mut result = Ok(());
         for (remote_addr, conn) in self.connections.iter_mut() {
             conn.close();
-            while let Some(payload) = conn.outgoing_raw_packet() {
-                self.transmits.push_back(TransportMessage {
-                    now,
-                    transport: TransportContext {
-                        local_addr: self.local_addr,
-                        peer_addr: *remote_addr,
-                        ecn: None,
-                        transport_protocol: self.transport_protocol,
-                    },
-                    message: payload,
-                });
-            }
+            let output = drain_conn(
+                conn,
+                &mut self.transmits,
+                now,
+                TransportContext {
+                    local_addr: self.local_addr,
+                    peer_addr: *remote_addr,
+                    ecn: None,
+                    transport_protocol: self.transport_protocol,
+                },
+            );
+            result = result.and(output);
         }
         self.connections.clear();
 
-        Ok(())
+        result
     }
 
     /// Feeds one datagram to `conn` and advances its handshake, recording a completed handshake
-    /// in `messages`. Draining application data and transmits is left to the caller, which does it
-    /// whether or not this fails.
+    /// in `messages`. The caller drains transmits even on error and retains undelivered data.
     fn read_into(
         conn: &mut DTLSConn,
         now: Instant,
@@ -185,13 +202,17 @@ impl Endpoint {
         let is_handshake_completed_before = conn.is_handshake_completed();
         conn.read(data)?;
         if !conn.is_handshake_completed() {
-            conn.handshake(now)?;
+            conn.handshake(now).inspect_err(|_| {
+                conn.current_handshake_state = crate::handshaker::HandshakeState::Errored
+            })?;
             // Drain any queued future-epoch packets (e.g. Finished that arrived
             // before ChangeCipherSpec bumped remote_epoch). If draining sets
             // handshake_rx, run handshake() again so the FSM can advance.
             let is_handshake = conn.handle_incoming_queued_packets()?;
             if is_handshake && !conn.is_handshake_completed() {
-                conn.handshake(now)?;
+                conn.handshake(now).inspect_err(|_| {
+                    conn.current_handshake_state = crate::handshaker::HandshakeState::Errored
+                })?;
             }
         } else if conn.received_handshake_in_last_datagram {
             // RFC 6347 4.2.4: this datagram carried an authenticated repeat of the peer's
@@ -224,6 +245,7 @@ impl Endpoint {
         ecn: Option<EcnCodepoint>,
         data: BytesMut,
     ) -> Result<Vec<EndpointEvent>> {
+        let is_new = !self.connections.contains_key(&remote);
         if let Vacant(e) = self.connections.entry(remote) {
             if let Some(server_config) = &self.server_config {
                 let handshake_config = server_config.clone();
@@ -238,23 +260,23 @@ impl Endpoint {
         let mut messages = vec![];
         if let Some(conn) = self.connections.get_mut(&remote) {
             let result = Self::read_into(conn, now, &data, &mut messages);
-            // Whatever the outcome, deliver the data that arrived and send what the connection
-            // queued: an alert in reply to the peer's (its close_notify, or a fatal alert) has to
-            // go out even though this read is ending in an error.
-            while let Some(message) = conn.incoming_application_data() {
-                messages.push(EndpointEvent::ApplicationData(message));
-            }
-            while let Some(payload) = conn.outgoing_raw_packet() {
-                self.transmits.push_back(TransportMessage {
-                    now,
-                    transport: TransportContext {
-                        local_addr: self.local_addr,
-                        peer_addr: remote,
-                        ecn,
-                        transport_protocol: self.transport_protocol,
-                    },
-                    message: payload,
-                });
+            // Retain accepted data until this call can return events. Alerts still go out on error.
+            let output_result = drain_conn(
+                conn,
+                &mut self.transmits,
+                now,
+                TransportContext {
+                    local_addr: self.local_addr,
+                    peer_addr: remote,
+                    ecn,
+                    transport_protocol: self.transport_protocol,
+                },
+            );
+            let result = result.and(output_result);
+            if result.is_ok() || conn.closed_by_peer {
+                while let Some(message) = conn.incoming_application_data() {
+                    messages.push(EndpointEvent::ApplicationData(message));
+                }
             }
             // A peer's close_notify ends the connection gracefully: report it rather than the
             // error the connection returns for it.
@@ -262,6 +284,14 @@ impl Endpoint {
                 self.connections.remove(&remote);
                 messages.push(EndpointEvent::PeerClosed);
                 return Ok(messages);
+            }
+            let terminal = !conn.is_handshake_completed()
+                && (conn.current_handshake_state == crate::handshaker::HandshakeState::Errored
+                    || matches!(result, Err(Error::ErrAlertFatalOrClose)));
+            if terminal
+                || (is_new && (result.is_err() || !conn.received_handshake_in_last_datagram))
+            {
+                self.connections.remove(&remote);
             }
             result?;
         }
@@ -277,18 +307,17 @@ impl Endpoint {
     pub fn write(&mut self, now: Instant, remote: SocketAddr, data: &[u8]) -> Result<()> {
         if let Some(conn) = self.connections.get_mut(&remote) {
             conn.write(data)?;
-            while let Some(payload) = conn.outgoing_raw_packet() {
-                self.transmits.push_back(TransportMessage {
-                    now,
-                    transport: TransportContext {
-                        local_addr: self.local_addr,
-                        peer_addr: remote,
-                        ecn: None,
-                        transport_protocol: self.transport_protocol,
-                    },
-                    message: payload,
-                });
-            }
+            drain_conn(
+                conn,
+                &mut self.transmits,
+                now,
+                TransportContext {
+                    local_addr: self.local_addr,
+                    peer_addr: remote,
+                    ecn: None,
+                    transport_protocol: self.transport_protocol,
+                },
+            )?;
             Ok(())
         } else {
             Err(Error::InvalidRemoteAddress(remote))
@@ -307,20 +336,34 @@ impl Endpoint {
             {
                 if conn.current_retransmit_timer.take().is_some() && !conn.is_handshake_completed()
                 {
-                    conn.handshake_timeout(now)?;
+                    let result = conn.handshake_timeout(now);
+                    if result.is_err() {
+                        let _ = drain_conn(
+                            conn,
+                            &mut self.transmits,
+                            now,
+                            TransportContext {
+                                local_addr: self.local_addr,
+                                peer_addr: remote,
+                                ecn: None,
+                                transport_protocol: self.transport_protocol,
+                            },
+                        );
+                        self.connections.remove(&remote);
+                        return result;
+                    }
                 }
-                while let Some(payload) = conn.outgoing_raw_packet() {
-                    self.transmits.push_back(TransportMessage {
-                        now,
-                        transport: TransportContext {
-                            local_addr: self.local_addr,
-                            peer_addr: remote,
-                            ecn: None,
-                            transport_protocol: self.transport_protocol,
-                        },
-                        message: payload,
-                    });
-                }
+                drain_conn(
+                    conn,
+                    &mut self.transmits,
+                    now,
+                    TransportContext {
+                        local_addr: self.local_addr,
+                        peer_addr: remote,
+                        ecn: None,
+                        transport_protocol: self.transport_protocol,
+                    },
+                )?;
             }
             Ok(())
         } else {
@@ -353,6 +396,83 @@ mod tests {
 
     fn server_addr() -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], 4445))
+    }
+
+    #[test]
+    fn framing_rejected_and_expired_associations_are_removed() -> Result<()> {
+        let provider = crypto::default_provider().unwrap();
+        let cfg = config(
+            provider,
+            false,
+            &[CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256],
+        )?;
+        let mut server = Endpoint::new(server_addr(), TransportProtocol::UDP, Some(cfg));
+        for port in 4000..4100 {
+            let remote = SocketAddr::from(([127, 0, 0, 1], port));
+            let _ = server.read(Instant::now(), remote, None, BytesMut::from(&b"bad"[..]));
+        }
+        assert_eq!(server.get_connections_keys().count(), 0);
+        let cfg = config(
+            crypto::default_provider().unwrap(),
+            true,
+            &[CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256],
+        )?;
+        let mut client = Endpoint::new(client_addr(), TransportProtocol::UDP, None);
+        client.connect(Instant::now(), server_addr(), cfg.clone(), None)?;
+        for _ in 0..32 {
+            let Some(deadline) = client.poll_timeout(&server_addr()) else {
+                break;
+            };
+            if client.handle_timeout(server_addr(), deadline).is_err() {
+                break;
+            }
+        }
+        assert_eq!(client.get_connections_keys().count(), 0);
+        while client.poll_transmit().is_some() {}
+        client.connect(Instant::now(), server_addr(), cfg, None)?;
+        assert!(client.poll_transmit().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn framing_write_propagates_encryption_failure() -> Result<()> {
+        let (mut client, _) = completed_client_and_server()?;
+        let conn = client.connections.get_mut(&server_addr()).unwrap();
+        conn.state.cipher_suite = Some(crate::cipher_suite::cipher_suite_for_id(
+            CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256,
+        )?);
+        assert!(
+            client
+                .write(Instant::now(), server_addr(), b"lost")
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn framing_read_error_preserves_application_data() -> Result<()> {
+        let (mut client, mut server) = completed_client_and_server()?;
+        let conn = client.connections.get_mut(&server_addr()).unwrap();
+        conn.write(b"accepted")?;
+        // An authenticated fatal alert follows the application record in the same datagram.
+        conn.notify(
+            crate::alert::AlertLevel::Fatal,
+            crate::alert::AlertDescription::InternalError,
+        );
+        let raw = conn.outgoing_raw_packet().unwrap().unwrap();
+        assert!(
+            server
+                .read(Instant::now(), client_addr(), None, raw)
+                .is_err()
+        );
+        let events = server.read(Instant::now(), client_addr(), None, BytesMut::new())?;
+        assert_eq!(events.iter().filter(|event| matches!(event, EndpointEvent::ApplicationData(data) if data.as_ref() == b"accepted")).count(), 1);
+        assert!(
+            server
+                .read(Instant::now(), client_addr(), None, BytesMut::new())?
+                .is_empty()
+        );
+        Ok(())
     }
 
     struct FailingRandom;
@@ -808,7 +928,7 @@ mod tests {
             .expect("the peer is connected");
         conn.handshake_timeout(Instant::now())?;
         let mut datagrams = vec![];
-        while let Some(datagram) = conn.outgoing_raw_packet() {
+        while let Some(datagram) = conn.outgoing_raw_packet().unwrap() {
             datagrams.push(datagram);
         }
         assert!(

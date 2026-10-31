@@ -75,6 +75,7 @@ pub struct DTLSConn {
     pub(crate) outgoing_packets: VecDeque<Packet>,
     outgoing_queued_packets: VecDeque<Packet>,
     outgoing_compacted_raw_packets: VecDeque<BytesMut>,
+    outgoing_error: Option<Error>,
 
     pub(crate) state: State, // Internal state
 
@@ -159,6 +160,7 @@ impl DTLSConn {
             outgoing_packets: VecDeque::new(),
             outgoing_queued_packets: VecDeque::new(),
             outgoing_compacted_raw_packets: VecDeque::new(),
+            outgoing_error: None,
 
             cache: HandshakeCache::new(),
             state,
@@ -192,15 +194,27 @@ impl DTLSConn {
     }
 
     /// Takes the next datagram the caller should send.
-    pub fn outgoing_raw_packet(&mut self) -> Option<BytesMut> {
-        if let Err(err) = self.handle_outgoing_packets() {
-            warn!(
-                "handle_outgoing_packets [{}] with error {}",
-                srv_cli_str(self.is_client),
-                err
-            );
+    ///
+    /// Returns serialization or encryption errors after previously processed output is drained.
+    /// An output failure closes the association.
+    pub fn outgoing_raw_packet(&mut self) -> Result<Option<BytesMut>> {
+        if self.outgoing_error.is_none()
+            && let Err(error) = self.handle_outgoing_packets()
+        {
+            self.outgoing_error = Some(error);
+            self.closed = true;
+            self.current_handshake_state = HandshakeState::Errored;
+            self.current_retransmit_timer = None;
+            self.outgoing_packets.clear();
+            self.outgoing_queued_packets.clear();
         }
-        self.outgoing_compacted_raw_packets.pop_front()
+        if let Some(packet) = self.outgoing_compacted_raw_packets.pop_front() {
+            return Ok(Some(packet));
+        }
+        if let Some(error) = self.outgoing_error.take() {
+            return Err(error);
+        }
+        Ok(None)
     }
 
     // Write writes p to the DTLS connection
@@ -280,49 +294,45 @@ impl DTLSConn {
     }
 
     fn handle_outgoing_packets(&mut self) -> Result<()> {
-        if self.is_handshake_completed() {
-            while let Some(mut pkt) = self.outgoing_queued_packets.pop_front() {
-                pkt.record.record_layer_header.epoch = self.get_local_epoch();
-                self.write_packets(vec![pkt]);
-            }
-        }
-
         let mut raw_packets = vec![];
-        while let Some(p) = self.outgoing_packets.pop_front() {
-            if let Content::Handshake(h) = &p.record.content {
-                let mut handshake_raw = vec![];
-                {
-                    let mut writer = BufWriter::<&mut Vec<u8>>::new(handshake_raw.as_mut());
-                    p.record.marshal(&mut writer)?;
-                }
-                debug!(
-                    "Send [handshake:{}] -> {} (epoch: {}, seq: {})",
-                    srv_cli_str(self.is_client),
-                    h.handshake_header.handshake_type,
-                    p.record.record_layer_header.epoch,
-                    h.handshake_header.message_sequence
-                );
-                self.cache.push(
-                    handshake_raw[RECORD_LAYER_HEADER_SIZE..].to_vec(),
-                    p.record.record_layer_header.epoch,
-                    h.handshake_header.message_sequence,
-                    h.handshake_header.handshake_type,
-                    self.is_client,
-                );
-
-                let raw_handshake_packets = self.process_handshake_packet(&p, h)?;
-                raw_packets.extend_from_slice(&raw_handshake_packets);
-            } else {
-                /*if let Content::Alert(a) = &p.record.content {
-                    if a.alert_description == AlertDescription::CloseNotify {
-                        closed = true;
+        let result = (|| {
+            while let Some(p) = self.outgoing_packets.pop_front() {
+                if let Content::Handshake(h) = &p.record.content {
+                    let mut handshake_raw = vec![];
+                    {
+                        let mut writer = BufWriter::<&mut Vec<u8>>::new(handshake_raw.as_mut());
+                        p.record.marshal(&mut writer)?;
                     }
-                }*/
+                    debug!(
+                        "Send [handshake:{}] -> {} (epoch: {}, seq: {})",
+                        srv_cli_str(self.is_client),
+                        h.handshake_header.handshake_type,
+                        p.record.record_layer_header.epoch,
+                        h.handshake_header.message_sequence
+                    );
+                    self.cache.push(
+                        handshake_raw[RECORD_LAYER_HEADER_SIZE..].to_vec(),
+                        p.record.record_layer_header.epoch,
+                        h.handshake_header.message_sequence,
+                        h.handshake_header.handshake_type,
+                        self.is_client,
+                    );
 
-                let raw_packet = self.process_packet(p)?;
-                raw_packets.push(raw_packet);
+                    self.process_handshake_packet(&p, h, &mut raw_packets)?;
+                } else {
+                    /*if let Content::Alert(a) = &p.record.content {
+                        if a.alert_description == AlertDescription::CloseNotify {
+                            closed = true;
+                        }
+                    }*/
+
+                    let raw_packet = self.process_packet(p)?;
+                    raw_packets.push(raw_packet);
+                }
             }
-        }
+
+            Ok(())
+        })();
 
         if !raw_packets.is_empty() {
             let compacted_raw_packets =
@@ -334,7 +344,7 @@ impl DTLSConn {
             }
         }
 
-        Ok(())
+        result
     }
 
     fn process_packet(&mut self, mut p: Packet) -> Result<Vec<u8>> {
@@ -344,17 +354,15 @@ impl DTLSConn {
                 self.state.local_sequence_number.push(0);
             }
 
+            let sequence = self.state.local_sequence_number[epoch];
+            if sequence > MAX_SEQUENCE_NUMBER {
+                return Err(Error::ErrSequenceNumberOverflow);
+            }
             self.state.local_sequence_number[epoch] += 1;
-            self.state.local_sequence_number[epoch] - 1
+            sequence
         };
         //debug!("{}: seq = {}", srv_cli_str(is_client), seq);
 
-        if seq > MAX_SEQUENCE_NUMBER {
-            // RFC 6347 Section 4.1.0
-            // The implementation must either abandon an association or rehandshake
-            // prior to allowing the sequence number to wrap.
-            return Err(Error::ErrSequenceNumberOverflow);
-        }
         p.record.record_layer_header.sequence_number = seq;
 
         // Marshal straight into the Vec: `BufWriter` would heap-allocate an
@@ -371,10 +379,35 @@ impl DTLSConn {
         Ok(raw_packet)
     }
 
-    fn process_handshake_packet(&mut self, p: &Packet, h: &Handshake) -> Result<Vec<Vec<u8>>> {
-        let mut raw_packets = vec![];
-
-        let handshake_fragments = DTLSConn::fragment_handshake(self.maximum_transmission_unit, h)?;
+    /// Appends each protected fragment immediately so later failures preserve earlier output.
+    fn process_handshake_packet(
+        &mut self,
+        p: &Packet,
+        h: &Handshake,
+        raw_packets: &mut Vec<Vec<u8>>,
+    ) -> Result<()> {
+        let overhead = if p.should_encrypt {
+            use crypto::{AeadAlgorithm, CryptoAlgorithm};
+            match self
+                .state
+                .cipher_suite
+                .as_ref()
+                .and_then(|suite| suite.id().record_algorithm())
+            {
+                Some(CryptoAlgorithm::Cbc(_)) => 16 + 20 + 16,
+                Some(CryptoAlgorithm::Aead(AeadAlgorithm::Aes128Ccm8)) => 8 + 8,
+                Some(CryptoAlgorithm::Aead(AeadAlgorithm::ChaCha20Poly1305)) => 16,
+                Some(CryptoAlgorithm::Aead(_)) => 8 + 16,
+                _ => return Err(Error::ErrCipherSuiteUnset),
+            }
+        } else {
+            0
+        };
+        let budget = self
+            .maximum_transmission_unit
+            .checked_sub(RECORD_LAYER_HEADER_SIZE + overhead)
+            .ok_or(Error::ErrBufferTooSmall)?;
+        let handshake_fragments = DTLSConn::fragment_handshake(budget, h)?;
 
         let epoch = p.record.record_layer_header.epoch as usize;
 
@@ -384,13 +417,14 @@ impl DTLSConn {
 
         for handshake_fragment in &handshake_fragments {
             let seq = {
+                let sequence = self.state.local_sequence_number[epoch];
+                if sequence > MAX_SEQUENCE_NUMBER {
+                    return Err(Error::ErrSequenceNumberOverflow);
+                }
                 self.state.local_sequence_number[epoch] += 1;
-                self.state.local_sequence_number[epoch] - 1
+                sequence
             };
             //debug!("seq = {}", seq);
-            if seq > MAX_SEQUENCE_NUMBER {
-                return Err(Error::ErrSequenceNumberOverflow);
-            }
 
             let record_layer_header = RecordLayerHeader {
                 protocol_version: p.record.record_layer_header.protocol_version,
@@ -420,7 +454,7 @@ impl DTLSConn {
             raw_packets.push(raw_packet);
         }
 
-        Ok(raw_packets)
+        Ok(())
     }
 
     fn fragment_handshake(maximum_transmission_unit: usize, h: &Handshake) -> Result<Vec<Vec<u8>>> {
@@ -432,7 +466,11 @@ impl DTLSConn {
 
         let mut fragmented_handshakes = vec![];
 
-        let mut content_fragments = split_bytes(&content, maximum_transmission_unit);
+        let body_budget = maximum_transmission_unit
+            .checked_sub(crate::handshake::handshake_header::HANDSHAKE_HEADER_LENGTH)
+            .filter(|budget| *budget > 0)
+            .ok_or(Error::ErrBufferTooSmall)?;
+        let mut content_fragments = split_bytes(&content, body_budget);
         if content_fragments.is_empty() {
             content_fragments = vec![vec![]];
         }
@@ -471,6 +509,10 @@ impl DTLSConn {
     pub(crate) fn set_handshake_completed(&mut self) {
         self.cache.finish();
         self.handshake_completed = true;
+        while let Some(mut packet) = self.outgoing_queued_packets.pop_front() {
+            packet.record.record_layer_header.epoch = self.get_local_epoch();
+            self.outgoing_packets.push_back(packet);
+        }
     }
 
     pub(crate) fn is_handshake_completed(&self) -> bool {

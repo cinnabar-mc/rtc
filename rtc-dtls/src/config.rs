@@ -534,7 +534,8 @@ impl ConfigBuilder {
             }
         }
 
-        let server_cert_verifier = if self.insecure_skip_verify {
+        let server_cert_verifier = if self.insecure_skip_verify || !is_client || !has_non_psk_suites
+        {
             None
         } else {
             let adapter = self.verifier_adapter.as_ref().ok_or_else(|| {

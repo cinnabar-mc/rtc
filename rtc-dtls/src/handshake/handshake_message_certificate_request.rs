@@ -73,6 +73,9 @@ impl HandshakeMessageCertificateRequest {
         }
 
         let signature_hash_algorithms_length = reader.read_u16::<BigEndian>()?;
+        if !signature_hash_algorithms_length.is_multiple_of(2) {
+            return Err(Error::ErrLengthMismatch);
+        }
 
         let mut signature_hash_algorithms = vec![];
         for _ in (0..signature_hash_algorithms_length).step_by(2) {
@@ -82,6 +85,21 @@ impl HandshakeMessageCertificateRequest {
             signature_hash_algorithms.push(SignatureHashAlgorithm { hash, signature });
         }
 
+        let authorities_length = reader.read_u16::<BigEndian>()? as usize;
+        let mut authorities = vec![0; authorities_length];
+        reader.read_exact(&mut authorities)?;
+        let mut remaining = authorities.as_slice();
+        while !remaining.is_empty() {
+            let length = remaining.read_u16::<BigEndian>()? as usize;
+            if length == 0 || length > remaining.len() {
+                return Err(Error::ErrLengthMismatch);
+            }
+            remaining = &remaining[length..];
+        }
+        let mut extra = [0];
+        if reader.read(&mut extra)? != 0 {
+            return Err(Error::ErrLengthMismatch);
+        }
         Ok(HandshakeMessageCertificateRequest {
             certificate_types,
             signature_hash_algorithms,

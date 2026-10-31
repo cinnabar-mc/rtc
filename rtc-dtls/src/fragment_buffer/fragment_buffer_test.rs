@@ -108,14 +108,9 @@ fn test_fragment_buffer() -> Result<()> {
         // Ensure zero length fragments don't cause an infinite recursive loop which in turn causes
         // a stack overflow.
         (
-            "Zero length fragment",
-            vec![vec![
-                0x16, 0xfe, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d, 0x00,
-                0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]],
-            vec![vec![
-                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-            ]],
+            "Zero length message",
+            vec![fragment(0, 0, 0, b"")],
+            vec![vec![0x0b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
             0,
         ),
     ];
@@ -171,4 +166,87 @@ fn test_fragment_buffer_overflow() -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Encodes one handshake fragment inside a plaintext record.
+fn fragment(sequence: u16, length: u32, offset: u32, body: &[u8]) -> Vec<u8> {
+    let mut raw = vec![0x16, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    HandshakeHeader {
+        handshake_type: crate::handshake::HandshakeType::Certificate,
+        length,
+        message_sequence: sequence,
+        fragment_offset: offset,
+        fragment_length: body.len() as u32,
+    }
+    .marshal(&mut raw)
+    .unwrap();
+    raw.extend_from_slice(body);
+    raw
+}
+
+#[test]
+fn framing_fragment_boundaries_and_overlap() {
+    let mut buffer = FragmentBuffer::new();
+    buffer.push(&fragment(0, 6, 0, b"")).unwrap();
+    assert!(buffer.pop().is_err());
+    let mut raw = fragment(0, 6, 0, b"ABC");
+    raw.extend_from_slice(&fragment(0, 6, 3, b"DEF")[RECORD_LAYER_HEADER_SIZE..]);
+    buffer.push(&raw).unwrap();
+    assert_eq!(
+        &buffer.pop().unwrap().0[HANDSHAKE_HEADER_LENGTH..],
+        b"ABCDEF"
+    );
+    for reverse in [false, true] {
+        let mut buffer = FragmentBuffer::new();
+        let mut fragments = [fragment(0, 6, 0, b"ABCD"), fragment(0, 6, 2, b"CDEF")];
+        if reverse {
+            fragments.reverse();
+        }
+        for raw in fragments {
+            buffer.push(&raw).unwrap();
+        }
+        assert_eq!(
+            &buffer.pop().unwrap().0[HANDSHAKE_HEADER_LENGTH..],
+            b"ABCDEF"
+        );
+    }
+    assert!(
+        FragmentBuffer::new()
+            .push(&fragment(0, 3, 2, b"XX"))
+            .is_err()
+    );
+    let mut truncated = fragment(0, 3, 0, b"ABC");
+    truncated.pop();
+    assert!(FragmentBuffer::new().push(&truncated).is_err());
+}
+
+#[test]
+fn framing_fragment_duplicates_are_bounded() {
+    let mut buffer = FragmentBuffer::new();
+    for _ in 0..10000 {
+        buffer.push(&fragment(1, 0, 0, b"")).unwrap();
+    }
+    assert_eq!(buffer.cache[&1].len(), 1);
+    assert!(buffer.size() > 0);
+    buffer.push(&fragment(0, 0, 0, b"")).unwrap();
+    buffer.pop().unwrap();
+    buffer.pop().unwrap();
+    assert_eq!(buffer.size(), 0);
+    buffer.push(&fragment(0, 0, 0, b"")).unwrap();
+    assert!(buffer.cache.is_empty());
+}
+
+#[test]
+fn framing_fragment_metadata_preserves_the_payload_budget() {
+    let mut buffer = FragmentBuffer::new();
+    let body = vec![7; FRAGMENT_BUFFER_MAX_SIZE - 100];
+    let mut offset = 0;
+    for chunk in body.chunks(60000) {
+        buffer
+            .push(&fragment(0, body.len() as u32, offset, chunk))
+            .unwrap();
+        offset += chunk.len() as u32;
+    }
+    let message = buffer.pop().unwrap().0;
+    assert_eq!(&message[HANDSHAKE_HEADER_LENGTH..], body);
 }

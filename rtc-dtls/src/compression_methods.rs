@@ -41,7 +41,9 @@ impl CompressionMethods {
     ///
     /// Fails on a write error, or if a field exceeds the length its wire format allows.
     pub fn marshal<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_u8(self.ids.len() as u8)?;
+        let count =
+            u8::try_from(self.ids.len()).map_err(|_| shared::error::Error::ErrLengthMismatch)?;
+        writer.write_u8(count)?;
 
         for id in &self.ids {
             writer.write_u8(*id as u8)?;

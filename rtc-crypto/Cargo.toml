@@ -14,14 +14,17 @@ readme = "README.md"
 
 [features]
 default = ["crypto-ring"]
-crypto-ring = ["dep:ring", "dep:aes", "dep:ctr", "dep:ccm", "dep:md-5", "dep:hmac", "dep:sha1"]
-crypto-aws-lc-rs = ["dep:aws-lc-rs", "dep:aes", "dep:ctr", "dep:ccm", "dep:md-5", "dep:hmac", "dep:sha1"]
+crypto-ring = ["dep:ring", "dep:aes", "dep:ctr", "dep:ccm", "dep:md-5", "dep:hmac", "dep:sha1", "dep:rsa", "dep:sha2", "dep:cbc"]
+crypto-aws-lc-rs = ["dep:aws-lc-rs", "dep:aes", "dep:ctr", "dep:ccm", "dep:md-5", "dep:hmac", "dep:sha1", "dep:rsa", "dep:sha2", "dep:cbc"]
 test-support = []
 
 [dependencies]
 aes = { workspace = true, optional = true }
 ctr = { workspace = true, optional = true }
+cbc = { version = "0.1.2", optional = true }
 rand.workspace = true
+rsa = { version = "0.9.10", default-features = false, features = ["std", "u64_digit"], optional = true }
+sha2 = { version = "0.10.9", features = ["oid"], optional = true }
 ccm = { workspace = true, optional = true }
 md-5 = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }

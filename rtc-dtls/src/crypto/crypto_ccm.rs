@@ -31,7 +31,6 @@ pub enum CryptoCcmTagLen {
 
 /// AES-CCM authenticated encryption for DTLS records, holding the per-direction keys.
 pub struct CryptoCcm {
-    provider: Arc<dyn RTCCryptoProvider>,
     local_ccm: Box<dyn AeadCipher>,
     remote_ccm: Box<dyn AeadCipher>,
     local_write_iv: Vec<u8>,
@@ -61,7 +60,6 @@ impl CryptoCcm {
             .new_aead(algorithm, remote_key)
             .map_err(crypto_error)?;
         Ok(CryptoCcm {
-            provider,
             local_ccm,
             local_write_iv: local_write_iv.to_vec(),
             remote_ccm,
@@ -80,10 +78,9 @@ impl CryptoCcm {
 
         let mut nonce = [0u8; CRYPTO_CCM_NONCE_LENGTH];
         nonce[..4].copy_from_slice(&self.local_write_iv[..4]);
-        self.provider
-            .random()
-            .fill(&mut nonce[4..])
-            .map_err(crypto_error)?;
+        // The epoch and record sequence are unique for the lifetime of these keys.
+        nonce[4..].copy_from_slice(&pkt_rlh.sequence_number.to_be_bytes());
+        nonce[4..6].copy_from_slice(&pkt_rlh.epoch.to_be_bytes());
 
         let additional_data = generate_aead_additional_data(pkt_rlh, payload.len());
 

@@ -197,6 +197,9 @@ impl RTCCrypto for RingCrypto {
         signature: &[u8],
     ) -> Result<(), CryptoError> {
         verify_public_key_encoding(scheme, public_key.encoding)?;
+        if scheme == SignatureScheme::RsaPkcs1Sha384 && public_key.bytes.len() < 256 {
+            return common::verify_legacy_rsa_sha384(public_key.bytes, message, signature);
+        }
         signature::UnparsedPublicKey::new(verification_algorithm(scheme), public_key.bytes)
             .verify(message, signature)
             .map_err(|_| CryptoError::InvalidSignature)

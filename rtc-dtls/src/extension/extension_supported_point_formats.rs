@@ -38,8 +38,9 @@ impl ExtensionSupportedPointFormats {
     ///
     /// Fails on a write error, or if a field exceeds the length its wire format allows.
     pub fn marshal<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_u16::<BigEndian>(1 + self.point_formats.len() as u16)?;
-        writer.write_u8(self.point_formats.len() as u8)?;
+        let count = u8::try_from(self.point_formats.len()).map_err(|_| Error::ErrLengthMismatch)?;
+        writer.write_u16::<BigEndian>(1 + count as u16)?;
+        writer.write_u8(count)?;
         for v in &self.point_formats {
             writer.write_u8(*v)?;
         }
@@ -53,9 +54,12 @@ impl ExtensionSupportedPointFormats {
     ///
     /// Fails if `reader` is truncated or its contents are not a valid encoding.
     pub fn unmarshal<R: Read>(reader: &mut R) -> Result<Self> {
-        let _ = reader.read_u16::<BigEndian>()?;
-
+        let payload = read_payload(reader)?;
+        let reader = &mut payload.as_slice();
         let point_format_count = reader.read_u8()? as usize;
+        if point_format_count != reader.len() {
+            return Err(Error::ErrLengthMismatch);
+        }
         let mut point_formats = vec![];
         for _ in 0..point_format_count {
             let point_format = reader.read_u8()?;

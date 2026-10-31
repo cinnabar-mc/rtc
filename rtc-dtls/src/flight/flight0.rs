@@ -159,11 +159,24 @@ pub(crate) fn negotiate_client_hello(
                         Some(Error::ErrNoSupportedEllipticCurves),
                     ));
                 }
-                for curve in e.elliptic_curves.iter() {
-                    if cfg.local_named_curves.contains(curve) {
-                        state.named_curve = *curve;
-                        break;
-                    }
+                if let Some(curve) = e
+                    .elliptic_curves
+                    .iter()
+                    .find(|curve| cfg.local_named_curves.contains(curve))
+                {
+                    state.named_curve = *curve;
+                } else if state
+                    .cipher_suite
+                    .as_ref()
+                    .is_some_and(|suite| !suite.is_psk())
+                {
+                    return Err((
+                        Some(Alert {
+                            alert_level: AlertLevel::Fatal,
+                            alert_description: AlertDescription::InsufficientSecurity,
+                        }),
+                        Some(Error::ErrNoSupportedEllipticCurves),
+                    ));
                 }
             }
             Extension::UseSrtp(e) => {

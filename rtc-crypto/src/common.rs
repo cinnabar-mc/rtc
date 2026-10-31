@@ -3,7 +3,10 @@ use crate::{
     SecretVec, StreamCipher, StreamCipherAlgorithm,
 };
 use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, KeyIvInit};
+use aes::cipher::{
+    BlockDecryptMut, BlockEncrypt, BlockEncryptMut, InnerIvInit, KeyInit, KeyIvInit,
+    block_padding::NoPadding,
+};
 use aes::{Aes128, Aes256};
 use ccm::Ccm;
 use ccm::aead::AeadInPlace;
@@ -21,21 +24,71 @@ type Aes128Ccm8 = Ccm<Aes128, U8, U12>;
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 type Aes256Ctr = ctr::Ctr128BE<Aes256>;
 
-/// Fills `output` from the thread-local CSPRNG shared by the built-in providers.
-///
-/// This is a ChaCha-based generator seeded from the operating system and periodically reseeded,
-/// not a per-call OS read. `ring::rand::SystemRandom` and `aws_lc_rs::rand::SystemRandom` reach
-/// the OS on every call — measured at ~829 ns and ~2196 ns for an 8-byte fill, against ~8 ns
-/// here. DTLS generates a GCM explicit nonce and a CBC record IV *per record*, so the difference
-/// showed up as a 3-8x regression on DTLS encryption; see `rtc-dtls/benches/README.md`.
-///
-/// This restores what the pre-provider code did (`rand::rng()`), and matches how BoringSSL and
-/// OpenSSL buffer internally. A deployment that requires every byte of entropy to come from a
-/// validated module supplies its own [`RTCRandom`](crate::RTCRandom) implementation; that is what
-/// the trait is for.
+/// Buffers an OS-seeded CSPRNG and reseeds after at most 64 KiB of output.
+#[derive(Default)]
+struct RandomBuffer {
+    rng: Option<rand::rngs::StdRng>,
+    generated: usize,
+}
+
+impl RandomBuffer {
+    /// Fills output while propagating failures from the initial seed or a later reseed.
+    fn fill(
+        &mut self,
+        output: &mut [u8],
+        mut seed: impl FnMut() -> Result<rand::rngs::StdRng, CryptoError>,
+    ) -> Result<(), CryptoError> {
+        use rand::Rng;
+        const RESEED_AFTER: usize = 64 * 1024;
+        for chunk in output.chunks_mut(RESEED_AFTER) {
+            if self.rng.is_none() || self.generated + chunk.len() > RESEED_AFTER {
+                self.rng = Some(seed()?);
+                self.generated = 0;
+            }
+            if let Some(rng) = &mut self.rng {
+                rng.fill_bytes(chunk);
+            }
+            self.generated += chunk.len();
+        }
+        Ok(())
+    }
+}
+
+thread_local! {
+    static RANDOM: std::cell::RefCell<RandomBuffer> = std::cell::RefCell::default();
+}
+
+/// Fills output from a buffered CSPRNG with fallible OS seeding and reseeding.
 pub(crate) fn fill_random(output: &mut [u8]) -> Result<(), CryptoError> {
-    rand::fill(output);
-    Ok(())
+    use rand::SeedableRng;
+    RANDOM.with(|random| {
+        random.borrow_mut().fill(output, || {
+            rand::rngs::StdRng::try_from_rng(&mut rand::rngs::SysRng)
+                .map_err(|_| CryptoError::RandomnessFailed)
+        })
+    })
+}
+
+/// Verifies legacy RSA-SHA384 keys below the backends' 2048-bit lower bound.
+pub(crate) fn verify_legacy_rsa_sha384(
+    public_key: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), CryptoError> {
+    use rsa::pkcs1::DecodeRsaPublicKey;
+    use rsa::traits::PublicKeyParts;
+    use sha2::Digest;
+    let key =
+        rsa::RsaPublicKey::from_pkcs1_der(public_key).map_err(|_| CryptoError::InvalidSignature)?;
+    if !(1024..=8192).contains(&key.n().bits()) {
+        return Err(CryptoError::InvalidSignature);
+    }
+    key.verify(
+        rsa::Pkcs1v15Sign::new::<sha2::Sha384>(),
+        &sha2::Sha384::digest(message),
+        signature,
+    )
+    .map_err(|_| CryptoError::InvalidSignature)
 }
 
 pub(crate) fn md5(data: &[u8]) -> Vec<u8> {
@@ -90,9 +143,12 @@ pub(crate) fn new_cbc(
     key: &[u8],
 ) -> Result<Box<dyn CbcCipher>, CryptoError> {
     match algorithm {
-        CbcAlgorithm::Aes256Cbc => Ok(Box::new(AesCbc {
-            key: ExpandedAesKey::new_256(key)?,
-        })),
+        CbcAlgorithm::Aes256Cbc => {
+            check_key_len(32, key.len())?;
+            Ok(Box::new(AesCbc {
+                key: Aes256::new_from_slice(key).map_err(|_| invalid_key(32, key.len()))?,
+            }))
+        }
     }
 }
 
@@ -115,35 +171,6 @@ pub(crate) fn new_ccm(
         }
     };
     Ok(Box::new(cipher))
-}
-
-// Stores an expanded key inside an already boxed cipher object, avoiding another allocation in
-// every constructed state object. Only AES-256 is needed: `CbcAlgorithm` has a single variant,
-// and CTR now goes through the `ctr` crate.
-#[allow(clippy::large_enum_variant)]
-enum ExpandedAesKey {
-    Aes256(Aes256),
-}
-
-impl ExpandedAesKey {
-    fn new_256(key: &[u8]) -> Result<Self, CryptoError> {
-        check_key_len(32, key.len())?;
-        Ok(Self::Aes256(
-            Aes256::new_from_slice(key).map_err(|_| invalid_key(32, key.len()))?,
-        ))
-    }
-
-    fn encrypt(&self, block: &mut [u8; AES_BLOCK_LEN]) {
-        match self {
-            Self::Aes256(cipher) => cipher.encrypt_block(GenericArray::from_mut_slice(block)),
-        }
-    }
-
-    fn decrypt(&self, block: &mut [u8; AES_BLOCK_LEN]) {
-        match self {
-            Self::Aes256(cipher) => cipher.decrypt_block(GenericArray::from_mut_slice(block)),
-        }
-    }
 }
 
 /// AES counter mode.
@@ -187,7 +214,7 @@ impl StreamCipher for AesCtr {
 }
 
 struct AesCbc {
-    key: ExpandedAesKey,
+    key: Aes256,
 }
 
 impl CbcCipher for AesCbc {
@@ -198,39 +225,19 @@ impl CbcCipher for AesCbc {
     fn encrypt_blocks(&mut self, iv: &[u8], blocks: &mut [u8]) -> Result<(), CryptoError> {
         check_nonce_len(AES_BLOCK_LEN, iv.len())?;
         check_blocks(blocks)?;
-        let mut previous: [u8; AES_BLOCK_LEN] = iv
-            .try_into()
-            .map_err(|_| invalid_nonce(AES_BLOCK_LEN, iv.len()))?;
-
-        // `check_blocks` has already rejected a length that is not a whole number of blocks, so the
-        // remainder this returns is empty and the array chunks are the whole input.
-        for block in blocks.as_chunks_mut::<AES_BLOCK_LEN>().0 {
-            for (byte, prior) in block.iter_mut().zip(previous) {
-                *byte ^= prior;
-            }
-            self.key.encrypt(block);
-            previous = *block;
-        }
+        let length = blocks.len();
+        cbc::Encryptor::inner_iv_init(self.key.clone(), GenericArray::from_slice(iv))
+            .encrypt_padded_mut::<NoPadding>(blocks, length)
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
         Ok(())
     }
 
     fn decrypt_blocks(&mut self, iv: &[u8], blocks: &mut [u8]) -> Result<(), CryptoError> {
         check_nonce_len(AES_BLOCK_LEN, iv.len())?;
         check_blocks(blocks)?;
-        let mut previous: [u8; AES_BLOCK_LEN] = iv
-            .try_into()
-            .map_err(|_| invalid_nonce(AES_BLOCK_LEN, iv.len()))?;
-
-        for block in blocks.as_chunks_mut::<AES_BLOCK_LEN>().0 {
-            // The ciphertext masks the *next* block, so it has to be kept before decryption
-            // overwrites it in place.
-            let ciphertext = *block;
-            self.key.decrypt(block);
-            for (byte, prior) in block.iter_mut().zip(previous) {
-                *byte ^= prior;
-            }
-            previous = ciphertext;
-        }
+        cbc::Decryptor::inner_iv_init(self.key.clone(), GenericArray::from_slice(iv))
+            .decrypt_padded_mut::<NoPadding>(blocks)
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
         Ok(())
     }
 }
@@ -371,4 +378,31 @@ fn invalid_key(expected: usize, actual: usize) -> CryptoError {
 
 fn invalid_nonce(expected: usize, actual: usize) -> CryptoError {
     CryptoError::InvalidNonceLength { expected, actual }
+}
+
+#[cfg(test)]
+mod random_tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    #[test]
+    fn randomness_failures_during_seed_and_reseed_return_errors() {
+        let mut buffer = RandomBuffer::default();
+        let mut output = [7; 16];
+        assert!(matches!(
+            buffer.fill(&mut output, || Err(CryptoError::RandomnessFailed)),
+            Err(CryptoError::RandomnessFailed)
+        ));
+        assert_eq!(output, [7; 16]);
+        buffer
+            .fill(&mut output, || Ok(rand::rngs::StdRng::from_seed([1; 32])))
+            .unwrap();
+        buffer.generated = 64 * 1024;
+        output.fill(7);
+        assert!(matches!(
+            buffer.fill(&mut output, || Err(CryptoError::RandomnessFailed)),
+            Err(CryptoError::RandomnessFailed)
+        ));
+        assert_eq!(output, [7; 16]);
+    }
 }

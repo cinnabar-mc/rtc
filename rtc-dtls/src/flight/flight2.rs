@@ -185,6 +185,22 @@ mod tests {
     }
 
     #[test]
+    fn framing_disjoint_curves_fail_negotiation() {
+        let provider = crypto::default_provider().unwrap();
+        let mut cfg = HandshakeConfig::new(provider.clone());
+        cfg.local_named_curves = vec![NamedCurve::P256];
+        cfg.local_cipher_suites = vec![CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256];
+        assert!(
+            negotiate_client_hello(
+                &mut State::new(provider, false),
+                &cfg,
+                &hello(NamedCurve::X25519, false)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn cookie_hello_renegotiates_extensions_and_rejects_changed_core_parameters() {
         for change_core in [false, true] {
             let provider = crypto::default_provider().unwrap();

@@ -2731,7 +2731,7 @@ fn certificate_pair() -> (DTLSConn, DTLSConn) {
 
 /// Moves all queued records and advances the receiving handshake using caller time.
 fn deliver_records(sender: &mut DTLSConn, receiver: &mut DTLSConn, now: Instant) -> Result<()> {
-    while let Some(packet) = sender.outgoing_raw_packet() {
+    while let Some(packet) = sender.outgoing_raw_packet().unwrap() {
         receiver.read(&packet)?;
         receiver.handshake(now)?;
         if receiver.handle_incoming_queued_packets()? {
@@ -2787,7 +2787,7 @@ fn benchmark_established_record_roundtrip() {
         let start = Instant::now();
         for _ in 0..100_000 {
             client.write(&payload).unwrap();
-            while let Some(packet) = client.outgoing_raw_packet() {
+            while let Some(packet) = client.outgoing_raw_packet().unwrap() {
                 server.read(&packet).unwrap();
             }
             assert_eq!(
@@ -2852,11 +2852,11 @@ fn repeated_cookie_challenges_wait_for_the_existing_backoff() {
     let start = Instant::now();
     let interval = client.handshake_config.retransmit_interval;
     client.handshake(start).unwrap();
-    assert!(client.outgoing_raw_packet().is_some());
+    assert!(client.outgoing_raw_packet().unwrap().is_some());
     client.read(&cookie_challenge(1, 0)).unwrap();
     client.handshake(start).unwrap();
     assert!(
-        client.outgoing_raw_packet().is_some(),
+        client.outgoing_raw_packet().unwrap().is_some(),
         "first cookie response is immediate"
     );
     let deadline = client.current_retransmit_timer.unwrap();
@@ -2869,13 +2869,13 @@ fn repeated_cookie_challenges_wait_for_the_existing_backoff() {
             .handshake(start + Duration::from_millis(u64::from(sequence)))
             .unwrap();
         assert!(
-            client.outgoing_raw_packet().is_none(),
+            client.outgoing_raw_packet().unwrap().is_none(),
             "a new cookie must not bypass the timer"
         );
         assert_eq!(client.current_retransmit_timer, Some(deadline));
     }
     client.handshake_timeout(deadline).unwrap();
-    assert!(client.outgoing_raw_packet().is_some());
+    assert!(client.outgoing_raw_packet().unwrap().is_some());
     assert_eq!(
         client.current_retransmit_timer,
         Some(deadline + interval * 2)
@@ -2958,7 +2958,7 @@ fn waiting_for_finished_does_not_repeat_client_certificate_verification() {
     deliver_records(&mut client, &mut server, now).unwrap();
     deliver_records(&mut server, &mut client, now).unwrap();
     let mut deferred = Vec::new();
-    while let Some(datagram) = client.outgoing_raw_packet() {
+    while let Some(datagram) = client.outgoing_raw_packet().unwrap() {
         for record in unpack_datagram(&datagram).unwrap() {
             if record[3..5] == [0, 1] {
                 deferred.push(record);
@@ -2987,13 +2987,13 @@ fn repeated_initial_hello_recovers_a_lost_cookie_response_with_backoff() {
     client.handshake(start).unwrap();
     server.handshake(start).unwrap();
     deliver_records(&mut client, &mut server, start).unwrap();
-    assert!(server.outgoing_raw_packet().is_some()); // Lose the first challenge.
+    assert!(server.outgoing_raw_packet().unwrap().is_some()); // Lose the first challenge.
     let deadline = client.current_retransmit_timer.unwrap();
     client.handshake_timeout(deadline).unwrap();
     deliver_records(&mut client, &mut server, deadline).unwrap();
     server.handshake_timeout(deadline).unwrap();
     assert!(
-        server.outgoing_raw_packet().is_some(),
+        server.outgoing_raw_packet().unwrap().is_some(),
         "a repeated ClientHello recovers the challenge"
     );
     assert!(!server.is_handshake_completed());
@@ -3026,7 +3026,7 @@ fn reordered_finished_and_early_data_wait_for_ccs_and_authentication() {
             reset_local_sequence_number: false,
         }]);
         let mut records = Vec::new();
-        while let Some(datagram) = client.outgoing_raw_packet() {
+        while let Some(datagram) = client.outgoing_raw_packet().unwrap() {
             records.extend(unpack_datagram(&datagram).unwrap());
         }
         records.sort_by_key(|record| {
@@ -3131,4 +3131,88 @@ fn client_rejects_an_unoffered_server_srtp_mki() {
     }
     assert!(deliver_records(&mut server, &mut client, now).is_err());
     assert!(!client.is_handshake_completed());
+}
+
+/// Creates an association with no handshake traffic queued.
+fn output_conn() -> DTLSConn {
+    DTLSConn::new(
+        Arc::new(HandshakeConfig::new(crypto::default_provider().unwrap())),
+        true,
+        None,
+    )
+}
+
+#[test]
+fn framing_writes_keep_order_across_handshake_completion() {
+    let mut conn = output_conn();
+    conn.write(b"A").unwrap();
+    conn.set_handshake_completed();
+    conn.write(b"B").unwrap();
+    conn.handle_outgoing_packets().unwrap();
+    let raw = conn.outgoing_compacted_raw_packets.pop_front().unwrap();
+    assert_eq!(raw[RECORD_LAYER_HEADER_SIZE], b'A');
+    assert_eq!(raw[RECORD_LAYER_HEADER_SIZE * 2 + 1], b'B');
+}
+
+#[test]
+fn framing_output_error_keeps_prior_records() {
+    let mut conn = output_conn();
+    conn.set_handshake_completed();
+    conn.state.local_sequence_number = vec![MAX_SEQUENCE_NUMBER];
+    conn.write(b"A").unwrap();
+    conn.write(b"B").unwrap();
+    assert_eq!(
+        conn.outgoing_raw_packet().unwrap().unwrap()[RECORD_LAYER_HEADER_SIZE],
+        b'A'
+    );
+    assert!(matches!(
+        conn.outgoing_raw_packet(),
+        Err(Error::ErrSequenceNumberOverflow)
+    ));
+    assert!(matches!(conn.write(b"C"), Err(Error::ErrConnClosed)));
+}
+
+#[test]
+fn framing_handshake_fragments_fit_mtu() {
+    use crate::handshake::handshake_message_certificate::HandshakeMessageCertificate;
+    let h = Handshake::new(HandshakeMessage::Certificate(HandshakeMessageCertificate {
+        certificate: vec![vec![7; 500]],
+    }));
+    let mut suites: Vec<Option<Box<dyn crate::cipher_suite::CipherSuite>>> = vec![None];
+    suites.extend(
+        crate::cipher_suite::default_cipher_suites()
+            .into_iter()
+            .map(Some),
+    );
+    for mut suite in suites {
+        let mut conn = output_conn();
+        conn.maximum_transmission_unit = 100;
+        let encrypted = suite.is_some();
+        if let Some(cipher) = &mut suite {
+            cipher
+                .init(
+                    crypto::default_provider().unwrap(),
+                    &[7; 48],
+                    &[8; 32],
+                    &[9; 32],
+                    true,
+                )
+                .unwrap();
+        }
+        conn.state.cipher_suite = suite;
+        let pkt = Packet {
+            record: RecordLayer::new(PROTOCOL_VERSION1_2, 0, Content::Handshake(h.clone())),
+            should_encrypt: encrypted,
+            reset_local_sequence_number: false,
+        };
+        let mut raw = vec![];
+        conn.process_handshake_packet(&pkt, &h, &mut raw).unwrap();
+        assert!(raw.len() > 1);
+        assert!(raw.iter().all(|r| r.len() <= 100));
+        conn.maximum_transmission_unit = 20;
+        assert!(
+            conn.process_handshake_packet(&pkt, &h, &mut vec![])
+                .is_err()
+        );
+    }
 }

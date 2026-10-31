@@ -180,8 +180,9 @@ impl From<&str> for CipherSuiteId {
 }
 
 impl CipherSuiteId {
-    pub(crate) fn supported_by(self, crypto: &dyn RTCCrypto) -> bool {
-        let record_algorithm = match self {
+    /// Returns the primitive protecting records for this suite.
+    pub(crate) fn record_algorithm(self) -> Option<CryptoAlgorithm> {
+        Some(match self {
             Self::Tls_Ecdhe_Ecdsa_With_Aes_128_Ccm | Self::Tls_Psk_With_Aes_128_Ccm => {
                 CryptoAlgorithm::Aead(AeadAlgorithm::Aes128Ccm)
             }
@@ -201,7 +202,14 @@ impl CipherSuiteId {
             | Self::Tls_Ecdhe_Rsa_With_ChaCha20_Poly1305_Sha256 => {
                 CryptoAlgorithm::Aead(AeadAlgorithm::ChaCha20Poly1305)
             }
-            Self::Unsupported => return false,
+            Self::Unsupported => return None,
+        })
+    }
+
+    /// Reports whether the provider implements this suite's record primitives.
+    pub(crate) fn supported_by(self, crypto: &dyn RTCCrypto) -> bool {
+        let Some(record_algorithm) = self.record_algorithm() else {
+            return false;
         };
         crypto.supports(CryptoAlgorithm::Hash(HashAlgorithm::Sha256))
             && crypto.supports(CryptoAlgorithm::Hmac(HmacAlgorithm::Sha256))

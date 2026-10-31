@@ -687,10 +687,12 @@ fn test_handshake_cache_session_hash() -> Result<()> {
 
     for (name, inputs, expected) in tests {
         let mut h = HandshakeCache::new();
+        h.push(vec![0xaa], 1, 0, HandshakeType::ServerHello, false);
         for i in inputs {
             h.push(i.data, i.epoch, i.message_sequence, i.typ, i.is_client);
         }
 
+        h.push(vec![0xbb], 1, u16::MAX, HandshakeType::ServerHello, false);
         let provider = crypto::default_provider().map_err(|e| Error::Crypto(e.to_string()))?;
         let verify_data = h.session_hash(provider.crypto(), CipherSuiteHash::Sha256, 0, &[])?;
 

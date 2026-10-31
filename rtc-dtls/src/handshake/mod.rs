@@ -312,3 +312,6 @@ impl Handshake {
         })
     }
 }
+
+#[cfg(test)]
+mod framing_test;
