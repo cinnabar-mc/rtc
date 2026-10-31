@@ -542,8 +542,16 @@ impl DTLSConn {
             .is_some_and(|cs| cs.is_initialized());
         let mut is_handshake = false;
         if cipher_ready {
-            while let Some(p) = self.incoming_encrypted_packets.pop_front() {
-                let (hs, alert, err) = self.handle_incoming_packet(p, false); // don't re-enqueue
+            for _ in 0..self.incoming_encrypted_packets.len() {
+                let p = self.incoming_encrypted_packets.pop_front().unwrap();
+                // Key derivation may finish before a reordered ChangeCipherSpec arrives.
+                if p.get(3..5).is_some_and(|epoch| {
+                    u16::from_be_bytes([epoch[0], epoch[1]]) > self.state.remote_epoch
+                }) {
+                    self.incoming_encrypted_packets.push_back(p);
+                    continue;
+                }
+                let (hs, alert, err) = self.handle_incoming_packet(p, false);
                 if hs {
                     is_handshake = true;
                     self.handshake_rx = Some(());

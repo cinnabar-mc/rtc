@@ -2999,3 +2999,69 @@ fn repeated_initial_hello_recovers_a_lost_cookie_response_with_backoff() {
     );
     assert!(!server.is_handshake_completed());
 }
+
+#[test]
+fn reordered_finished_and_early_data_wait_for_ccs_and_authentication() {
+    use crate::application_data::ApplicationData;
+    for corrupt in [false, true] {
+        let (mut client, mut server) = certificate_pair();
+        if corrupt {
+            client.state.local_verify_data = vec![0xa5; 12];
+        }
+        let now = Instant::now();
+        client.handshake(now).unwrap();
+        server.handshake(now).unwrap();
+        deliver_records(&mut client, &mut server, now).unwrap();
+        deliver_records(&mut server, &mut client, now).unwrap();
+        deliver_records(&mut client, &mut server, now).unwrap();
+        deliver_records(&mut server, &mut client, now).unwrap();
+        client.write_packets(vec![Packet {
+            record: RecordLayer::new(
+                PROTOCOL_VERSION1_2,
+                1,
+                Content::ApplicationData(ApplicationData {
+                    data: BytesMut::from(&b"early data"[..]),
+                }),
+            ),
+            should_encrypt: true,
+            reset_local_sequence_number: false,
+        }]);
+        let mut records = Vec::new();
+        while let Some(datagram) = client.outgoing_raw_packet() {
+            records.extend(unpack_datagram(&datagram).unwrap());
+        }
+        records.sort_by_key(|record| {
+            if record[0] == 23 {
+                0
+            } else if record[3..5] == [0, 1] {
+                1
+            } else {
+                2
+            }
+        });
+        let result = (|| -> Result<()> {
+            for record in records {
+                assert!(server.incoming_application_data().is_none());
+                server.read(&record)?;
+                server.handshake(now)?;
+                if server.handle_incoming_queued_packets()? {
+                    server.handshake(now)?;
+                }
+            }
+            Ok(())
+        })();
+        if corrupt {
+            assert_eq!(result.unwrap_err(), Error::ErrVerifyDataMismatch);
+            assert!(!server.is_handshake_completed());
+            assert!(server.incoming_application_data().is_none());
+        } else {
+            result.unwrap();
+            assert!(server.is_handshake_completed());
+            assert_eq!(
+                server.incoming_application_data().unwrap().as_ref(),
+                b"early data"
+            );
+            assert!(server.incoming_application_data().is_none());
+        }
+    }
+}
