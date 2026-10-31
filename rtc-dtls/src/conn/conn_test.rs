@@ -2706,3 +2706,95 @@ fn test_old_epoch_alert_honoured_until_handshake_completes() {
         "a discarded alert was answered"
     );
 }
+
+/// Creates certificate-authenticated peers without network I/O or wall-clock waits.
+fn certificate_pair() -> (DTLSConn, DTLSConn) {
+    use crate::config::{ClientAuthType, ConfigBuilder};
+    use crate::crypto::Certificate;
+    let provider = crypto::default_provider().unwrap();
+    let certificate =
+        Certificate::generate_self_signed(vec!["localhost".into()], provider.crypto()).unwrap();
+    let builder = ConfigBuilder::default()
+        .with_crypto_provider(provider)
+        .with_certificates(vec![certificate])
+        .with_insecure_skip_verify(true)
+        .with_client_auth(ClientAuthType::RequireAnyClientCert);
+    (
+        DTLSConn::new(
+            Arc::new(builder.clone().build(true, None).unwrap()),
+            true,
+            None,
+        ),
+        DTLSConn::new(Arc::new(builder.build(false, None).unwrap()), false, None),
+    )
+}
+
+/// Moves all queued records and advances the receiving handshake using caller time.
+fn deliver_records(sender: &mut DTLSConn, receiver: &mut DTLSConn, now: Instant) -> Result<()> {
+    while let Some(packet) = sender.outgoing_raw_packet() {
+        receiver.read(&packet)?;
+        receiver.handshake(now)?;
+        if receiver.handle_incoming_queued_packets()? {
+            receiver.handshake(now)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn server_authenticates_client_finished_before_completion() {
+    for corrupt in [false, true] {
+        let (mut client, mut server) = certificate_pair();
+        if corrupt {
+            // The client encrypts and authenticates this incorrect transcript verifier.
+            client.state.local_verify_data = vec![0xa5; 12];
+        }
+        let now = Instant::now();
+        client.handshake(now).unwrap();
+        server.handshake(now).unwrap();
+        let result = (|| -> Result<()> {
+            for _ in 0..8 {
+                deliver_records(&mut client, &mut server, now)?;
+                deliver_records(&mut server, &mut client, now)?;
+            }
+            Ok(())
+        })();
+        if corrupt {
+            assert_eq!(result.unwrap_err(), Error::ErrVerifyDataMismatch);
+            assert!(!server.is_handshake_completed());
+            assert!(server.incoming_application_data().is_none());
+        } else {
+            result.unwrap();
+            assert!(client.is_handshake_completed() && server.is_handshake_completed());
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual before/after transport benchmark"]
+fn benchmark_established_record_roundtrip() {
+    let (mut client, mut server) = certificate_pair();
+    let now = Instant::now();
+    client.handshake(now).unwrap();
+    server.handshake(now).unwrap();
+    for _ in 0..8 {
+        deliver_records(&mut client, &mut server, now).unwrap();
+        deliver_records(&mut server, &mut client, now).unwrap();
+    }
+    assert!(client.is_handshake_completed() && server.is_handshake_completed());
+    let payload = vec![0x5a; 1200];
+    for sample in 0..5 {
+        let start = Instant::now();
+        for _ in 0..100_000 {
+            client.write(&payload).unwrap();
+            while let Some(packet) = client.outgoing_raw_packet() {
+                server.read(&packet).unwrap();
+            }
+            assert_eq!(
+                server.incoming_application_data().unwrap().as_ref(),
+                payload
+            );
+        }
+        eprintln!("DTLS record sample {sample}: {:?}/100000", start.elapsed());
+    }
+}

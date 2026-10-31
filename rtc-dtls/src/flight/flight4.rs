@@ -445,10 +445,10 @@ impl Flight for Flight4 {
             Err(_) => return Err((None, None)),
         };
 
-        state.handshake_recv_sequence = seq;
-
-        if let Some(HandshakeMessage::Finished(h)) = msgs.get(&HandshakeType::Finished) {
-            h
+        let finished = if let Some(HandshakeMessage::Finished(finished)) =
+            msgs.get(&HandshakeType::Finished)
+        {
+            finished
         } else {
             return Err((
                 Some(Alert {
@@ -458,6 +458,97 @@ impl Flight for Flight4 {
                 None,
             ));
         };
+
+        let plain_text = cache.pull_and_merge(&[
+            HandshakeCachePullRule {
+                typ: HandshakeType::ClientHello,
+                epoch: cfg.initial_epoch,
+                is_client: true,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::ServerHello,
+                epoch: cfg.initial_epoch,
+                is_client: false,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::Certificate,
+                epoch: cfg.initial_epoch,
+                is_client: false,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::ServerKeyExchange,
+                epoch: cfg.initial_epoch,
+                is_client: false,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::CertificateRequest,
+                epoch: cfg.initial_epoch,
+                is_client: false,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::ServerHelloDone,
+                epoch: cfg.initial_epoch,
+                is_client: false,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::Certificate,
+                epoch: cfg.initial_epoch,
+                is_client: true,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::ClientKeyExchange,
+                epoch: cfg.initial_epoch,
+                is_client: true,
+                optional: false,
+            },
+            HandshakeCachePullRule {
+                typ: HandshakeType::CertificateVerify,
+                epoch: cfg.initial_epoch,
+                is_client: true,
+                optional: false,
+            },
+        ]);
+        let Some(cipher_suite) = &state.cipher_suite else {
+            return Err((
+                Some(Alert {
+                    alert_level: AlertLevel::Fatal,
+                    alert_description: AlertDescription::InternalError,
+                }),
+                Some(Error::ErrInvalidCipherSuite),
+            ));
+        };
+        let expected = prf_verify_data_client(
+            cfg.provider().crypto(),
+            &state.master_secret,
+            &plain_text,
+            cipher_suite.hash_func(),
+        )
+        .map_err(|error| {
+            (
+                Some(Alert {
+                    alert_level: AlertLevel::Fatal,
+                    alert_description: AlertDescription::InternalError,
+                }),
+                Some(error),
+            )
+        })?;
+        if !crypto::constant_time_eq(&expected, &finished.verify_data) {
+            return Err((
+                Some(Alert {
+                    alert_level: AlertLevel::Fatal,
+                    alert_description: AlertDescription::HandshakeFailure,
+                }),
+                Some(Error::ErrVerifyDataMismatch),
+            ));
+        }
+        state.handshake_recv_sequence = seq;
 
         // A psk suite is sent no CertificateRequest (see `generate`), so skip `client_auth`
         // rather than fail it for a certificate it was never asked for.
