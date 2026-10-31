@@ -159,10 +159,6 @@ pub(crate) fn default_signature_schemes() -> Vec<SignatureHashAlgorithm> {
             signature: SignatureAlgorithm::Ecdsa,
         },
         SignatureHashAlgorithm {
-            hash: HashAlgorithm::Sha512,
-            signature: SignatureAlgorithm::Ecdsa,
-        },
-        SignatureHashAlgorithm {
             hash: HashAlgorithm::Sha256,
             signature: SignatureAlgorithm::Rsa,
         },

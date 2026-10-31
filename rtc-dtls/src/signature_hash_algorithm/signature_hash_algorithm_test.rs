@@ -139,3 +139,10 @@ fn test_parse_signature_schemes() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn framing_default_signature_schemes_have_crypto_mappings() {
+    for scheme in default_signature_schemes() {
+        assert!(scheme.crypto_scheme().is_ok(), "{scheme:?}");
+    }
+}
