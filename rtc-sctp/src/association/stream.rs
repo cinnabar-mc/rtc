@@ -239,6 +239,9 @@ impl Stream<'_> {
             _ => {}
         };
 
+        if !source.has_remaining() {
+            return Ok(0);
+        }
         let id = self.association.allocate_message_id()?;
         let (p, _) = source.pop_chunk(self.association.max_message_size() as usize);
 

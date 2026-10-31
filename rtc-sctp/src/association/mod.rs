@@ -512,7 +512,7 @@ impl Association {
                     local_addr: self.local_addr,
                     peer_addr: self.remote_addr,
                     ecn: None,
-                    transport_protocol: Default::default(),
+                    transport_protocol: self.transport_protocol,
                 },
                 message: Payload::RawEncode(contents),
             })
@@ -642,10 +642,10 @@ impl Association {
 
     /// Whether there is no longer any need to keep the association around
     ///
-    /// Closed associations become drained after a brief timeout to absorb any remaining in-flight
-    /// packets from the peer. All drained associations have been closed.
+    /// Shutdown states retain protocol work. Only closed associations are drained.
     pub fn is_drained(&self) -> bool {
-        self.state.is_drained()
+        // An answerer also uses Closed while awaiting its first COOKIE-ECHO.
+        self.state.is_drained() && self.my_cookie.is_none() && self.control_queue.is_empty()
     }
 
     /// Look up whether we're the client or server of this Association
@@ -703,8 +703,6 @@ impl Association {
             self.set_state(AssociationState::ShutdownSent);
         }
 
-        self.endpoint_events.push_back(EndpointEventInner::Drained);
-
         Ok(())
     }
 
@@ -735,8 +733,10 @@ impl Association {
 
     /// Close ends the SCTP Association and cleans up any state
     pub fn close(&mut self, reason: AssociationError) -> Result<()> {
-        if self.state() != AssociationState::Closed {
+        if self.state() != AssociationState::Closed || self.my_cookie.is_some() {
             self.set_state(AssociationState::Closed);
+            self.my_cookie = None;
+            self.endpoint_events.push_back(EndpointEventInner::Drained);
 
             debug!("[{}] closing association..", self.side);
 
@@ -950,7 +950,7 @@ impl Association {
     }
 
     /// handle_inbound parses incoming raw packets
-    fn handle_inbound(&mut self, p: Packet, now: Instant) -> Result<()> {
+    pub(crate) fn handle_inbound(&mut self, p: Packet, now: Instant) -> Result<()> {
         if let Err(err) = p.check_packet() {
             warn!("[{}] failed validating packet {}", self.side, err);
             return Ok(());
@@ -2663,6 +2663,7 @@ impl Association {
                 .marshal()
             {
                 raw_packets.push(raw);
+                let _ = self.close(AssociationError::AssociationClosed);
                 ok = false;
             } else {
                 warn!(
@@ -2946,7 +2947,6 @@ impl Association {
             error!("[{}] failed to close association: {err}", self.side);
         }
         self.control_queue.clear();
-        self.endpoint_events.push_back(EndpointEventInner::Drained);
     }
 
     fn on_messages_abandoned(&mut self, now: Instant) {

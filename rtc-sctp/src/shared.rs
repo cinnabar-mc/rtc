@@ -1,6 +1,5 @@
 use crate::Payload;
 use ::shared::TransportMessage;
-use std::fmt::{Debug, Formatter};
 
 /// Events sent from an Endpoint to an Association
 #[derive(Debug)]
@@ -13,11 +12,16 @@ pub(crate) enum AssociationEventInner {
     //NewIdentifiers(Vec<IssuedAid>, Instant),
 }
 
-impl Debug for AssociationEventInner {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AssociationEventInner")
-            .field("Datagram", &self)
-            .finish()
+impl std::fmt::Debug for AssociationEventInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Datagram(datagram) => f
+                .debug_struct("Datagram")
+                .field("now", &datagram.now)
+                .field("transport", &datagram.transport)
+                .field("message", &datagram.message)
+                .finish(),
+        }
     }
 }
 

@@ -113,10 +113,11 @@ pub struct BytesArray<'a> {
     chunks: &'a mut [Bytes],
     /// The amount of chunks consumed from this source
     consumed: usize,
-    length: usize,
+    remaining: usize,
 }
 
 impl<'a> BytesArray<'a> {
+    /// Wraps buffers and counts their remaining payload bytes.
     pub fn from_chunks(chunks: &'a mut [Bytes]) -> Self {
         let mut length = 0;
         for chunk in chunks.iter() {
@@ -126,7 +127,7 @@ impl<'a> BytesArray<'a> {
         Self {
             chunks,
             consumed: 0,
-            length,
+            remaining: length,
         }
     }
 }
@@ -147,9 +148,11 @@ impl BytesSource for BytesArray<'_> {
                 if chunk.is_empty() {
                     continue;
                 }
+                self.remaining -= chunk.len();
                 return (chunk, chunks_consumed);
             } else if limit > 0 {
                 let chunk = chunk.split_to(limit);
+                self.remaining -= chunk.len();
                 return (chunk, chunks_consumed);
             } else {
                 break;
@@ -160,11 +163,11 @@ impl BytesSource for BytesArray<'_> {
     }
 
     fn has_remaining(&self) -> bool {
-        self.consumed < self.length
+        self.remaining != 0
     }
 
     fn remaining(&self) -> usize {
-        self.length - self.consumed
+        self.remaining
     }
 }
 
@@ -619,5 +622,36 @@ mod test {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bytes_array_tests {
+    use super::*;
+    #[test]
+    fn remaining_counts_bytes_across_partial_and_empty_chunks() {
+        let mut chunks = [
+            Bytes::new(),
+            Bytes::from_static(b"abc"),
+            Bytes::new(),
+            Bytes::from_static(b"de"),
+            Bytes::new(),
+        ];
+        let mut source = BytesArray::from_chunks(&mut chunks);
+        assert_eq!(source.remaining(), 5);
+        assert_eq!(source.pop_chunk(1), (Bytes::from_static(b"a"), 1));
+        assert_eq!(source.remaining(), 4);
+        assert_eq!(source.pop_chunk(8), (Bytes::from_static(b"bc"), 1));
+        assert_eq!(source.remaining(), 2);
+        assert_eq!(source.pop_chunk(8), (Bytes::from_static(b"de"), 2));
+        assert_eq!(source.remaining(), 0);
+        assert!(!source.has_remaining());
+        assert!(source.pop_chunk(8).0.is_empty());
+        assert_eq!(source.remaining(), 0);
+        let mut chunks = [Bytes::new()];
+        let mut source = BytesArray::from_chunks(&mut chunks);
+        assert!(source.pop_chunk(1).0.is_empty());
+        assert_eq!(source.remaining(), 0);
+        assert!(!source.has_remaining());
     }
 }
