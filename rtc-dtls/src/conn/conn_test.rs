@@ -2940,6 +2940,48 @@ fn client_honors_requested_certificate_types_and_signature_schemes() {
 }
 
 #[test]
+fn waiting_for_finished_does_not_repeat_client_certificate_verification() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let count = Arc::new(AtomicUsize::new(0));
+    let (mut client, mut server) = certificate_pair();
+    let observed = count.clone();
+    Arc::get_mut(&mut server.handshake_config)
+        .unwrap()
+        .verify_peer_certificate = Some(Arc::new(move |_, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }));
+    let now = Instant::now();
+    client.handshake(now).unwrap();
+    server.handshake(now).unwrap();
+    deliver_records(&mut client, &mut server, now).unwrap();
+    deliver_records(&mut server, &mut client, now).unwrap();
+    deliver_records(&mut client, &mut server, now).unwrap();
+    deliver_records(&mut server, &mut client, now).unwrap();
+    let mut deferred = Vec::new();
+    while let Some(datagram) = client.outgoing_raw_packet() {
+        for record in unpack_datagram(&datagram).unwrap() {
+            if record[3..5] == [0, 1] {
+                deferred.push(record);
+            } else {
+                server.read(&record).unwrap();
+                server.handshake(now).unwrap();
+            }
+        }
+    }
+    for _ in 0..8 {
+        server.handshake_rx = Some(());
+        server.handshake(now).unwrap();
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    for record in deferred {
+        server.read(&record).unwrap();
+        server.handshake(now).unwrap();
+    }
+    assert!(server.is_handshake_completed());
+}
+
+#[test]
 fn repeated_initial_hello_recovers_a_lost_cookie_response_with_backoff() {
     let (mut client, mut server) = certificate_pair();
     let start = Instant::now();

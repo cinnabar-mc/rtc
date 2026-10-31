@@ -91,7 +91,18 @@ impl Flight for Flight4 {
             ));
         };
 
-        if let Some(message) = msgs.get(&HandshakeType::Certificate) {
+        if let Some(message) = msgs.get(&HandshakeType::Certificate)
+            && !state.client_flight_processed
+        {
+            if cfg.client_auth == ClientAuthType::NoClientCert {
+                return Err((
+                    Some(Alert {
+                        alert_level: AlertLevel::Fatal,
+                        alert_description: AlertDescription::UnexpectedMessage,
+                    }),
+                    Some(Error::Other("unsolicited client certificate".into())),
+                ));
+            }
             let h = match message {
                 HandshakeMessage::Certificate(h) => h,
                 _ => {
@@ -112,7 +123,9 @@ impl Flight for Flight4 {
             );
         }
 
-        if let Some(message) = msgs.get(&HandshakeType::CertificateVerify) {
+        if let Some(message) = msgs.get(&HandshakeType::CertificateVerify)
+            && !state.client_flight_processed
+        {
             let h = match message {
                 HandshakeMessage::CertificateVerify(h) => h,
                 _ => {
@@ -263,7 +276,7 @@ impl Flight for Flight4 {
                 ));
             }
             state.peer_certificates_verified = verified
-        } else if !state.peer_certificates.is_empty() {
+        } else if !state.peer_certificates.is_empty() && !state.client_flight_processed {
             // A certificate was received, but we haven't seen a CertificateVerify
             // keep reading until we receive one
             return Err((None, None));
@@ -415,6 +428,8 @@ impl Flight for Flight4 {
                 }
             }
         }
+
+        state.client_flight_processed = true;
 
         // Now, encrypted packets can be handled
         /*TODO:
@@ -951,10 +966,11 @@ mod tests {
             true,
         );
 
-        let cfg = HandshakeConfig::new(
+        let mut cfg = HandshakeConfig::new(
             crypto::default_provider().expect("a built-in crypto provider is enabled for tests"),
         );
 
+        cfg.client_auth = ClientAuthType::RequestClientCert;
         let f = Flight4 {};
         let res = f.parse(&mut state, &cache, &cfg);
         assert!(res.is_err());

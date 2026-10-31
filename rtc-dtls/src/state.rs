@@ -49,6 +49,7 @@ pub struct State {
     pub(crate) local_verify_data: Vec<u8>,         // cached VerifyData
     pub(crate) local_key_signature: Vec<u8>,       // cached keySignature
     pub(crate) peer_certificates_verified: bool,
+    pub(crate) client_flight_processed: bool,
     //pub(crate) replay_detector: Vec<Box<dyn ReplayDetector>>,
 }
 
@@ -105,6 +106,7 @@ impl State {
             local_verify_data: vec![],
             local_key_signature: vec![],
             peer_certificates_verified: false,
+            client_flight_processed: false,
         }
     }
 }
