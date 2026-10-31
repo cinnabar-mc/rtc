@@ -387,6 +387,9 @@ impl<'a> SctpHandler<'a> {
             endpoint.handle_event(ch, event);
             if drained {
                 self.ctx.sctp_transport.sctp_associations.remove(&ch);
+                if self.ctx.sctp_transport.sctp_associations.is_empty() {
+                    self.ctx.sctp_transport.is_closed = true;
+                }
                 self.ctx.association_transport.remove(&ch);
                 self.ctx.pending_readable.retain(|(pch, _)| *pch != ch);
                 self.ctx.peer_opened_streams.retain(|(pch, _)| *pch != ch);
