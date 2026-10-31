@@ -730,6 +730,18 @@ fn initalize_cipher_suite(
             ));
         }
 
+        if let Some(suite) = &state.cipher_suite {
+            verify_certificate_key_type(&state.peer_certificates, suite.certificate_type())
+                .map_err(|error| {
+                    (
+                        Some(Alert {
+                            alert_level: AlertLevel::Fatal,
+                            alert_description: AlertDescription::BadCertificate,
+                        }),
+                        Some(error),
+                    )
+                })?;
+        }
         let expected_msg =
             value_key_message(&client_random, &server_random, &h.public_key, h.named_curve);
         if let Err(err) = verify_key_signature(

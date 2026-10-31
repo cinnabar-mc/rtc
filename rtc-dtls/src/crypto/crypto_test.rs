@@ -498,3 +498,20 @@ fn ed25519_signatures_require_the_ed25519_wire_scheme() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn server_certificate_key_matches_the_cipher_suite_authentication_type() {
+    use crate::client_certificate_type::ClientCertificateType;
+    let provider = crypto::default_provider().unwrap();
+    for algorithm in [&rcgen::PKCS_ECDSA_P256_SHA256, &rcgen::PKCS_ED25519] {
+        let certificate = Certificate::generate_self_signed_with_alg(
+            vec!["localhost".into()],
+            algorithm,
+            provider.crypto(),
+        )
+        .unwrap();
+        let raw = vec![certificate.certificate[0].as_ref().to_vec()];
+        assert!(verify_certificate_key_type(&raw, ClientCertificateType::EcdsaSign).is_ok());
+        assert!(verify_certificate_key_type(&raw, ClientCertificateType::RsaSign).is_err());
+    }
+}

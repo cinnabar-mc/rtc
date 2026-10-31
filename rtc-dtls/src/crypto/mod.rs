@@ -275,6 +275,28 @@ pub const OID_ED25519: Oid<'static> = oid!(1.3.101.112);
 /// The X.509 algorithm OID for ECDSA with a named curve.
 pub const OID_ECDSA: Oid<'static> = oid!(1.2.840.10045.2.1);
 
+/// Requires the leaf public key to match the negotiated cipher suite's authentication type.
+pub(crate) fn verify_certificate_key_type(
+    raw: &[Vec<u8>],
+    expected: crate::client_certificate_type::ClientCertificateType,
+) -> Result<()> {
+    let leaf = raw.first().ok_or(Error::ErrLengthMismatch)?;
+    let (_, certificate) =
+        x509_parser::parse_x509_certificate(leaf).map_err(|_| Error::ErrKeySignatureMismatch)?;
+    let algorithm = &certificate.public_key().algorithm.algorithm;
+    let actual = if *algorithm == oid!(1.2.840.113549.1.1.1) {
+        crate::client_certificate_type::ClientCertificateType::RsaSign
+    } else if *algorithm == OID_ECDSA || *algorithm == OID_ED25519 {
+        crate::client_certificate_type::ClientCertificateType::EcdsaSign
+    } else {
+        return Err(Error::ErrKeySignatureMismatch);
+    };
+    if actual != expected {
+        return Err(Error::ErrKeySignatureMismatch);
+    }
+    Ok(())
+}
+
 fn verify_signature(
     crypto: &dyn crypto::RTCCrypto,
     message: &[u8],
