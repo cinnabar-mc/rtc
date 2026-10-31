@@ -525,7 +525,7 @@ impl Relay<'_> {
                     relay.set_nonce_from_msg(&res);
                     Err(Error::ErrTryAgain)
                 } else {
-                    Err(Error::Other(format!("{} (error {})", res.typ, code)))
+                    Err(Error::Other(format!("{} (error {})", res.typ, code.code.0)))
                 }
             } else if res.typ != MessageType::new(METHOD_CHANNEL_BIND, CLASS_SUCCESS_RESPONSE) {
                 Err(Error::ErrUnexpectedResponse)
