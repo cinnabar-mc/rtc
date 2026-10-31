@@ -147,23 +147,17 @@ impl fmt::Display for RTCDtlsRole {
 /// If no role can be found we return DTLSRoleAuto
 impl From<&SessionDescription> for RTCDtlsRole {
     fn from(session_description: &SessionDescription) -> Self {
-        for media_section in &session_description.media_descriptions {
-            for attribute in &media_section.attributes {
-                if attribute.key == "setup" {
-                    if let Some(value) = &attribute.value {
-                        match value.as_str() {
-                            "active" => return RTCDtlsRole::Client,
-                            "passive" => return RTCDtlsRole::Server,
-                            _ => return RTCDtlsRole::Auto,
-                        };
-                    } else {
-                        return RTCDtlsRole::Auto;
-                    }
-                }
-            }
+        let setup = session_description
+            .media_descriptions
+            .iter()
+            .flat_map(|media| &media.attributes)
+            .chain(&session_description.attributes)
+            .find(|attribute| attribute.key == "setup");
+        match setup.and_then(|attribute| attribute.value.as_deref()) {
+            Some("active") => RTCDtlsRole::Client,
+            Some("passive") => RTCDtlsRole::Server,
+            _ => RTCDtlsRole::Auto,
         }
-
-        RTCDtlsRole::Auto
     }
 }
 
@@ -250,6 +244,21 @@ a=setup:";
                 RTCDtlsRole::Client,
             ),
         ];
+
+        let mut tests = tests;
+        for (session_role, expected) in [
+            ("active", RTCDtlsRole::Client),
+            ("passive", RTCDtlsRole::Server),
+        ] {
+            let inherited =
+                MEDIA_NO_SETUP.replace("t=0 0\n", &format!("t=0 0\na=setup:{session_role}\n"));
+            tests.push(("Session setup inherited", inherited.clone(), expected));
+            tests.push((
+                "Media setup overrides session",
+                format!("{inherited}a=setup:actpass\n"),
+                RTCDtlsRole::Auto,
+            ));
+        }
 
         for (name, session_description_str, expected_role) in tests {
             let mut reader = Cursor::new(session_description_str.as_bytes());

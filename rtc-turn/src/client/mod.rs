@@ -10,6 +10,8 @@
 #[cfg(test)]
 mod client_test;
 #[cfg(test)]
+mod lifecycle_test;
+#[cfg(test)]
 mod requested_family_test;
 
 /// Channel bindings, which replace the 36-byte Data indication header with a 4-byte one.
@@ -275,8 +277,11 @@ impl Client {
         //  - Non-STUN message from the STUN server
 
         if is_stun_message(data) {
-            self.handle_stun_message(now, data)
+            self.handle_stun_message(now, data, from)
         } else if ChannelData::is_channel_data(data) {
+            if self.turn_serv_addr != Some(from) || self.relays.is_empty() {
+                return Ok(());
+            }
             self.handle_channel_data(data)
         } else if self.stun_serv_addr.is_some() && &from == self.stun_serv_addr.as_ref().unwrap() {
             // received from STUN server, but it is not a STUN message
@@ -288,7 +293,7 @@ impl Client {
         }
     }
 
-    fn handle_stun_message(&mut self, now: Instant, data: &[u8]) -> Result<()> {
+    fn handle_stun_message(&mut self, now: Instant, data: &[u8], from: SocketAddr) -> Result<()> {
         let mut msg = Message::new();
         msg.raw = data.to_vec();
         msg.decode()?;
@@ -302,6 +307,9 @@ impl Client {
         }
 
         if msg.typ.class == CLASS_INDICATION {
+            if self.turn_serv_addr != Some(from) || self.relays.is_empty() {
+                return Ok(());
+            }
             if msg.typ.method == METHOD_DATA {
                 let mut peer_addr = PeerAddress::default();
                 peer_addr.get_from(&msg)?;
@@ -327,11 +335,15 @@ impl Client {
         // - stun.ClassSuccessResponse
         // - stun.ClassErrorResponse
 
-        if self.tr_map.find(&msg.transaction_id).is_none() {
-            // silently discard
+        let Some(transaction) = self.tr_map.find(&msg.transaction_id) else {
             debug!("no transaction for {}", msg);
             return Ok(());
+        };
+        if transaction.peer_addr != from || transaction.transaction_type.method() != msg.typ.method
+        {
+            return Ok(());
         }
+        self.authenticate_response(&transaction.transaction_type, &mut msg)?;
 
         if let Some(tr) = self.tr_map.delete(&msg.transaction_id) {
             match msg.typ.method {
@@ -376,12 +388,14 @@ impl Client {
                     }
                 }
                 METHOD_REFRESH => {
-                    if let TransactionType::RefreshRequest(relayed_addr) = tr.transaction_type {
+                    if let TransactionType::RefreshRequest(relayed_addr, lifetime) =
+                        tr.transaction_type
+                    {
                         let mut relay = Relay {
                             relayed_addr,
                             client: self,
                         };
-                        relay.handle_refresh_allocation_response(now, msg)?;
+                        relay.handle_refresh_allocation_response(now, msg, lifetime)?;
                     }
                 }
                 METHOD_CHANNEL_BIND => {
@@ -400,6 +414,45 @@ impl Client {
         }
 
         Ok(())
+    }
+
+    /// Authenticates relay responses before they can consume a pending transaction.
+    fn authenticate_response(&self, request: &TransactionType, msg: &mut Message) -> Result<()> {
+        let key = match request {
+            TransactionType::BindingRequest | TransactionType::AllocateAttempt => return Ok(()),
+            TransactionType::AllocateRequest(_) => MessageIntegrity::long_term_integrity_key(
+                self.username.text.clone(),
+                self.realm.text.clone(),
+                self.password.clone(),
+                self.crypto_provider.crypto(),
+            )?,
+            TransactionType::CreatePermissionRequest(addr, _)
+            | TransactionType::RefreshRequest(addr, _)
+            | TransactionType::ChannelBindRequest(addr, _) => self
+                .relays
+                .get(addr)
+                .ok_or(Error::ErrConnClosed)?
+                .long_term_integrity_key
+                .clone(),
+        };
+        // Long-term authentication challenges may omit integrity, but must carry a new nonce.
+        if msg.typ.class == CLASS_ERROR_RESPONSE && msg.get(ATTR_MESSAGE_INTEGRITY).is_err() {
+            let mut code = ErrorCodeAttribute::default();
+            if code.get_from(msg).is_ok()
+                && matches!(
+                    code.code,
+                    stun::error_code::CODE_UNAUTHORIZED | stun::error_code::CODE_STALE_NONCE
+                )
+                && Nonce::get_from_as(msg, ATTR_NONCE).is_ok()
+                && Realm::get_from_as(msg, ATTR_REALM).is_ok()
+            {
+                return Ok(());
+            }
+        }
+        if msg.get(ATTR_MESSAGE_INTEGRITY)?.len() != 20 {
+            return Err(Error::ErrIntegrityMismatch);
+        }
+        MessageIntegrity::check(msg, &key, self.crypto_provider.crypto())
     }
 
     fn handle_channel_data(&mut self, data: &[u8]) -> Result<()> {

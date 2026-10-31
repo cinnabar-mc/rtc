@@ -48,8 +48,8 @@ impl Binding {
 /// Thread-safe Binding map.
 #[derive(Default)]
 pub(crate) struct BindingManager {
-    chan_map: HashMap<u16, String>,
-    addr_map: HashMap<String, Binding>,
+    chan_map: HashMap<u16, SocketAddr>,
+    addr_map: HashMap<SocketAddr, Binding>,
     next: u16,
 }
 
@@ -90,17 +90,17 @@ impl BindingManager {
             refreshed_at: now,
         };
 
-        self.chan_map.insert(b.number, b.addr.to_string());
-        self.addr_map.insert(b.addr.to_string(), b);
-        self.addr_map.get(&addr.to_string())
+        self.chan_map.insert(b.number, b.addr);
+        self.addr_map.insert(b.addr, b);
+        self.addr_map.get(&addr)
     }
 
     pub(crate) fn find_by_addr(&self, addr: &SocketAddr) -> Option<&Binding> {
-        self.addr_map.get(&addr.to_string())
+        self.addr_map.get(addr)
     }
 
     pub(crate) fn get_by_addr(&mut self, addr: &SocketAddr) -> Option<&mut Binding> {
-        self.addr_map.get_mut(&addr.to_string())
+        self.addr_map.get_mut(addr)
     }
 
     pub(crate) fn find_by_number(&self, number: u16) -> Option<&Binding> {
@@ -114,7 +114,7 @@ impl BindingManager {
     }
 
     pub(crate) fn delete_by_addr(&mut self, addr: &SocketAddr) -> bool {
-        if let Some(b) = self.addr_map.remove(&addr.to_string()) {
+        if let Some(b) = self.addr_map.remove(addr) {
             self.chan_map.remove(&b.number);
             true
         } else {
