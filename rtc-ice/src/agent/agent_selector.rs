@@ -104,7 +104,9 @@ impl Agent {
                         Box::new(Username::new(ATTR_USERNAME, username)),
                         Box::<UseCandidateAttr>::default(),
                         Box::new(AttrControlling(self.tie_breaker)),
-                        Box::new(PriorityAttr(pair.local_priority)),
+                        Box::new(PriorityAttr(
+                            self.local_candidates[pair.local_index].peer_reflexive_priority(),
+                        )),
                         Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
                             remote_credentials.pwd.clone(),
                             self.crypto_provider.crypto(),
@@ -273,7 +275,9 @@ impl ControllingSelector for Agent {
                 Box::new(TransactionId::new()),
                 Box::new(Username::new(ATTR_USERNAME, username)),
                 Box::new(AttrControlling(self.tie_breaker)),
-                Box::new(PriorityAttr(self.local_candidates[local_index].priority())),
+                Box::new(PriorityAttr(
+                    self.local_candidates[local_index].peer_reflexive_priority(),
+                )),
                 Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
                     remote_credentials.pwd.clone(),
                     self.crypto_provider.crypto(),
@@ -441,7 +445,9 @@ impl ControlledSelector for Agent {
                 Box::new(TransactionId::new()),
                 Box::new(Username::new(ATTR_USERNAME, username)),
                 Box::new(AttrControlled(self.tie_breaker)),
-                Box::new(PriorityAttr(self.local_candidates[local_index].priority())),
+                Box::new(PriorityAttr(
+                    self.local_candidates[local_index].peer_reflexive_priority(),
+                )),
                 Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
                     remote_credentials.pwd.clone(),
                     self.crypto_provider.crypto(),
@@ -561,6 +567,111 @@ impl ControlledSelector for Agent {
                 self.send_binding_success(now, m, local_index, remote_index);
                 self.ping_candidate(now, local_index, remote_index);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{Credentials, agent_config::AgentConfig};
+    use crate::candidate::candidate_host::CandidateHostConfig;
+    use std::sync::Arc;
+
+    /// Builds a candidate pair with a chosen local type and custom lower priority bits.
+    fn check_agent(candidate_type: CandidateType) -> Agent {
+        let now = Instant::now();
+        let mut agent = Agent::new(
+            now,
+            Arc::new(AgentConfig::default()),
+            crypto::default_provider().unwrap(),
+        )
+        .unwrap();
+        let mut local = CandidateHostConfig {
+            base_config: CandidateConfig {
+                network: "udp".into(),
+                address: "127.0.0.1".into(),
+                port: 40000,
+                component: 2,
+                priority: (u32::from(candidate_type.preference()) << 24) | 0x1234fe,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()
+        .unwrap();
+        local.candidate_type = candidate_type;
+        let remote = CandidateHostConfig {
+            base_config: CandidateConfig {
+                network: "udp".into(),
+                address: "127.0.0.1".into(),
+                port: 40001,
+                component: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .new_candidate_host()
+        .unwrap();
+        agent.local_candidates.push(local);
+        agent.remote_candidates.push(remote);
+        agent.ufrag_pwd.remote_credentials = Some(Credentials {
+            ufrag: "peer".into(),
+            pwd: "peer-password".into(),
+        });
+        agent.add_pair(0, 0);
+        agent
+    }
+
+    #[test]
+    fn binding_checks_use_peer_reflexive_priority_for_both_roles_and_nomination() {
+        for candidate_type in [
+            CandidateType::Host,
+            CandidateType::ServerReflexive,
+            CandidateType::Relay,
+        ] {
+            for role in 0..3 {
+                let mut agent = check_agent(candidate_type);
+                let original_priority = agent.local_candidates[0].priority();
+                let now = Instant::now();
+                match role {
+                    0 => ControllingSelector::ping_candidate(&mut agent, now, 0, 0),
+                    1 => ControlledSelector::ping_candidate(&mut agent, now, 0, 0),
+                    _ => {
+                        agent.nominated_pair = Some(0);
+                        agent.nominate_pair(now);
+                    }
+                }
+                let packet = agent.write_outs.pop_front().unwrap();
+                let mut message = Message::new();
+                message.raw = packet.message.to_vec();
+                message.decode().unwrap();
+                let mut priority = PriorityAttr::default();
+                priority.get_from(&message).unwrap();
+                assert_eq!(
+                    priority.0,
+                    (110 << 24) | 0x1234fe,
+                    "{candidate_type}, role {role}"
+                );
+                assert_eq!(message.contains(ATTR_USE_CANDIDATE), role == 2);
+                assert_eq!(agent.local_candidates[0].priority(), original_priority);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual before/after connectivity-check benchmark"]
+    fn benchmark_binding_check_generation() {
+        let mut agent = check_agent(CandidateType::Host);
+        let now = Instant::now();
+        for sample in 0..5 {
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                ControllingSelector::ping_candidate(&mut agent, now, 0, 0);
+                assert!(agent.write_outs.pop_front().is_some());
+                agent.pending_binding_requests.clear();
+            }
+            eprintln!("ICE check sample {sample}: {:?}/100000", start.elapsed());
         }
     }
 }

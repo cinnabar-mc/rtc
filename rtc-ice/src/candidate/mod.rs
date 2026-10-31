@@ -335,6 +335,12 @@ impl Candidate {
             + (256 - u32::from(self.component()))
     }
 
+    /// Uses the peer-reflexive type preference for a check, preserving local and component bits.
+    pub(crate) fn peer_reflexive_priority(&self) -> u32 {
+        (u32::from(CandidateType::PeerReflexive.preference()) << 24)
+            | (self.priority() & 0x00ff_ffff)
+    }
+
     /// Returns `Option<CandidateRelatedAddress>`.
     pub fn related_address(&self) -> Option<CandidateRelatedAddress> {
         self.related_address.as_ref().cloned()
