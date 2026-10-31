@@ -2798,3 +2798,33 @@ fn benchmark_established_record_roundtrip() {
         eprintln!("DTLS record sample {sample}: {:?}/100000", start.elapsed());
     }
 }
+
+#[test]
+fn unsupported_epochs_are_discarded_without_retaining_packets() {
+    let mut conn = setup_dtls_conn_server_handshake_in_progress();
+    conn.state.remote_epoch = 1;
+    for epoch in [2u16, 3, u16::MAX] {
+        for sequence in 0..64u64 {
+            let header = RecordLayerHeader {
+                content_type: ContentType::Handshake,
+                protocol_version: PROTOCOL_VERSION1_2,
+                epoch,
+                sequence_number: sequence,
+                content_len: 1,
+            };
+            let mut record = Vec::new();
+            header.marshal(&mut record).unwrap();
+            record.push(0);
+            conn.read(&record).unwrap();
+            assert!(conn.incoming_encrypted_packets.is_empty(), "epoch {epoch}");
+            assert!(conn.replay_detector.len() <= 2);
+        }
+    }
+    // The valid next epoch still waits for CCS during an initial handshake.
+    conn.state.remote_epoch = 0;
+    let mut record = vec![22, 0xfe, 0xfd, 0, 1];
+    record.extend_from_slice(&[0; 6]);
+    record.extend_from_slice(&[0, 1, 0]);
+    conn.read(&record).unwrap();
+    assert_eq!(conn.incoming_encrypted_packets.len(), 1);
+}

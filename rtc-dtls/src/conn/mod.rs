@@ -602,6 +602,11 @@ impl DTLSConn {
             }
         };
 
+        // DTLS 1.2 uses only the plaintext and negotiated cipher epochs.
+        if h.epoch > 1 {
+            return (false, None, None);
+        }
+
         // Validate epoch
         let epoch = self.state.remote_epoch;
         if h.epoch > epoch {
