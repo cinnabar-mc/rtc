@@ -204,12 +204,12 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for DropFilter {
             return Ok(());
         }
 
-        if self.media_packets % 100 == 0 {
+        if self.media_packets.is_multiple_of(100) {
             self.report();
         }
         self.media_packets += 1;
 
-        if self.drop_one_in != 0 && self.media_packets % self.drop_one_in as u64 == 0 {
+        if self.drop_one_in != 0 && self.media_packets.is_multiple_of(self.drop_one_in as u64) {
             self.dropped_packets += 1;
             // Swallowed: the packet is not queued, so nothing below this interceptor — the pacer,
             // the TWCC sender, the send history — ever sees it, exactly as if the path had lost it.
@@ -358,7 +358,6 @@ async fn run(
             rtcp_feedback: vec![],
         },
         payload_type: 96,
-        ..Default::default()
     };
     media_engine.register_codec(video_codec.clone(), RtpCodecKind::Video)?;
 
@@ -374,7 +373,6 @@ async fn run(
             rtcp_feedback: vec![],
         },
         payload_type: FLEX_FEC_PAYLOAD_TYPE,
-        ..Default::default()
     };
     media_engine.register_codec(fec_codec, RtpCodecKind::Video)?;
 

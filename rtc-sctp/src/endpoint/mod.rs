@@ -143,16 +143,7 @@ impl Endpoint {
         let known_ch = if dst_cid > 0 {
             self.association_ids.get(&dst_cid).cloned()
         } else {
-            //TODO: improve INIT handling for DoS attack
-            if partial_decode.first_chunk_type == CT_INIT {
-                if let Some(dst_cid) = partial_decode.initiate_tag {
-                    self.association_ids.get(&dst_cid).cloned()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            None
         };
 
         let known_ch = known_ch.or_else(|| {
@@ -201,7 +192,7 @@ impl Endpoint {
         //
         // Potentially create a new association
         //
-        self.handle_first_packet(now, remote, ecn, partial_decode)
+        self.handle_first_packet(now, remote, partial_decode)
             .map(|(ch, a)| (ch, DatagramEvent::NewAssociation(a)))
     }
 
@@ -240,7 +231,6 @@ impl Endpoint {
         &mut self,
         now: Instant,
         remote: SocketAddr,
-        ecn: Option<EcnCodepoint>,
         partial_decode: PartialDecode,
     ) -> Option<(AssociationHandle, Association)> {
         if partial_decode.first_chunk_type != CT_INIT
@@ -269,7 +259,18 @@ impl Endpoint {
         let server_config = server_config.clone();
         let transport_config = server_config.transport.clone();
 
-        let remote_aid = *partial_decode.initiate_tag.as_ref().unwrap();
+        // Validate the complete INIT before reserving an association slot.
+        let packet = partial_decode.finish().ok()?;
+        packet.check_packet().ok()?;
+        for chunk in &packet.chunks {
+            chunk.check().ok()?;
+        }
+        let remote_aid = packet
+            .chunks
+            .first()?
+            .as_any()
+            .downcast_ref::<crate::chunk::chunk_init::ChunkInit>()?
+            .initiate_tag;
         let local_aid = self.new_aid();
 
         let (ch, mut conn) = self.add_association(
@@ -281,18 +282,10 @@ impl Endpoint {
             transport_config,
         );
 
-        conn.handle_event(AssociationEvent(AssociationEventInner::Datagram(
-            TransportMessage {
-                now,
-                transport: TransportContext {
-                    local_addr: self.local_addr,
-                    peer_addr: remote,
-                    ecn,
-                    transport_protocol: self.transport_protocol,
-                },
-                message: Payload::PartialDecode(partial_decode),
-            },
-        )));
+        if conn.handle_inbound(packet, now).is_err() {
+            self.handle_event(ch, EndpointEvent::drained());
+            return None;
+        }
 
         self.associations[ch.0].local_port = conn.source_port;
         self.associations[ch.0].peer_port = conn.destination_port;

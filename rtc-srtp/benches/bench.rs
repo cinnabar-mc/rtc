@@ -164,18 +164,18 @@ fn benchmark_decrypt_rtcp_aes_128_cm_hmac_sha1(g: &mut BenchmarkGroup<WallTime>)
 /// The built-in providers compiled into this benchmark, so the two backends can be compared
 /// under identical inputs.
 fn providers() -> Vec<(&'static str, std::sync::Arc<dyn crypto::RTCCryptoProvider>)> {
-    let mut providers: Vec<(&'static str, std::sync::Arc<dyn crypto::RTCCryptoProvider>)> =
-        Vec::new();
-    #[cfg(feature = "crypto-ring")]
-    providers.push((
-        "ring",
-        std::sync::Arc::new(crypto::providers::RingProvider::default()),
-    ));
-    #[cfg(feature = "crypto-aws-lc-rs")]
-    providers.push((
-        "aws-lc-rs",
-        std::sync::Arc::new(crypto::providers::AwsLcRsProvider::default()),
-    ));
+    let providers: Vec<(&'static str, std::sync::Arc<dyn crypto::RTCCryptoProvider>)> = vec![
+        #[cfg(feature = "crypto-ring")]
+        (
+            "ring",
+            std::sync::Arc::new(crypto::providers::RingProvider::default()),
+        ),
+        #[cfg(feature = "crypto-aws-lc-rs")]
+        (
+            "aws-lc-rs",
+            std::sync::Arc::new(crypto::providers::AwsLcRsProvider::default()),
+        ),
+    ];
     assert!(
         !providers.is_empty(),
         "enable `ring` or `aws-lc-rs` to run these benchmarks"

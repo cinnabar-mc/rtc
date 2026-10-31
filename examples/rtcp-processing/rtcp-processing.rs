@@ -188,7 +188,6 @@ async fn run(input_sdp_file: String) -> Result<()> {
                 rtcp_feedback: vec![],
             },
             payload_type: 96,
-            ..Default::default()
         },
         RtpCodecKind::Video,
     )?;
@@ -204,7 +203,6 @@ async fn run(input_sdp_file: String) -> Result<()> {
                 rtcp_feedback: vec![],
             },
             payload_type: 111,
-            ..Default::default()
         },
         RtpCodecKind::Audio,
     )?;
@@ -399,7 +397,7 @@ async fn run(input_sdp_file: String) -> Result<()> {
             res = event_rx.recv() => {
                 match res {
                     Some(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     None => {
                         eprintln!("event_rx closed");

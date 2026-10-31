@@ -49,7 +49,6 @@ fn build_video_only_peer(role: RTCDtlsRole) -> Result<rtc::peer_connection::RTCP
                 rtcp_feedback: vec![],
             },
             payload_type: 96,
-            ..Default::default()
         },
         RtpCodecKind::Video,
     )?;
@@ -179,9 +178,9 @@ async fn test_media_only_negotiation_does_not_start_sctp() -> Result<()> {
 
         while let Some(event) = offerer_pc.poll_event() {
             match event {
-                RTCPeerConnectionEvent::OnIceConnectionStateChangeEvent(state)
-                    if state == RTCIceConnectionState::Failed =>
-                {
+                RTCPeerConnectionEvent::OnIceConnectionStateChangeEvent(
+                    RTCIceConnectionState::Failed,
+                ) => {
                     return Err(anyhow::anyhow!("offerer ICE connection failed"));
                 }
                 RTCPeerConnectionEvent::OnConnectionStateChangeEvent(state) => {
@@ -201,9 +200,9 @@ async fn test_media_only_negotiation_does_not_start_sctp() -> Result<()> {
 
         while let Some(event) = answerer_pc.poll_event() {
             match event {
-                RTCPeerConnectionEvent::OnIceConnectionStateChangeEvent(state)
-                    if state == RTCIceConnectionState::Failed =>
-                {
+                RTCPeerConnectionEvent::OnIceConnectionStateChangeEvent(
+                    RTCIceConnectionState::Failed,
+                ) => {
                     return Err(anyhow::anyhow!("answerer ICE connection failed"));
                 }
                 RTCPeerConnectionEvent::OnConnectionStateChangeEvent(state) => {

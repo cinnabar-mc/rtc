@@ -158,20 +158,12 @@ fn pipe(
     default_config0: Option<AgentConfig>,
     default_config1: Option<AgentConfig>,
 ) -> Result<(Agent, Agent)> {
-    let mut cfg0 = if let Some(cfg) = default_config0 {
-        cfg
-    } else {
-        AgentConfig::default()
-    };
+    let mut cfg0 = default_config0.unwrap_or_default();
     cfg0.urls = vec![];
 
     let a_agent = Agent::new(Instant::now(), Arc::new(cfg0), test_crypto_provider())?;
 
-    let mut cfg1 = if let Some(cfg) = default_config1 {
-        cfg
-    } else {
-        AgentConfig::default()
-    };
+    let mut cfg1 = default_config1.unwrap_or_default();
     cfg1.urls = vec![];
 
     let b_agent = Agent::new(Instant::now(), Arc::new(cfg1), test_crypto_provider())?;
@@ -312,8 +304,7 @@ fn test_handle_peer_reflexive_udp_pflx_candidate() -> Result<()> {
 
             assert_eq!(c.port(), 999, "Port number mismatch");
         } else {
-            assert!(
-                false,
+            panic!(
                 "expected non-empty remote candidate for network type {}",
                 local_network_type,
             );
@@ -1041,6 +1032,7 @@ fn test_candidate_pair_stats() -> Result<()> {
 
     let srflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidateServerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -1056,6 +1048,7 @@ fn test_candidate_pair_stats() -> Result<()> {
 
     let prflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidatePeerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -1186,6 +1179,7 @@ fn test_local_candidate_stats() -> Result<()> {
 
     let srflx_local: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidateServerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "192.168.1.1".to_owned(),
@@ -1279,6 +1273,7 @@ fn test_remote_candidate_stats() -> Result<()> {
 
     let srflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidateServerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -1294,6 +1289,7 @@ fn test_remote_candidate_stats() -> Result<()> {
 
     let prflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidatePeerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -2069,8 +2065,10 @@ fn test_zero_failed_timeout_keeps_checking_agent_recoverable() -> Result<()> {
 #[test]
 fn test_role_conflict_both_controlling_smaller_tiebreaker_switches() -> Result<()> {
     // Create agent with controlling role
-    let mut config = AgentConfig::default();
-    config.is_controlling = true;
+    let config = AgentConfig {
+        is_controlling: true,
+        ..Default::default()
+    };
     let mut agent = Agent::new(Instant::now(), Arc::new(config), test_crypto_provider())?;
 
     // Set a specific tiebreaker value
@@ -2165,7 +2163,7 @@ fn test_role_conflict_both_controlling_smaller_tiebreaker_switches() -> Result<(
         }
 
         // Priorities should change when role changes (unless there were no pairs initially)
-        if initial_pair_count > 0 && initial_priorities.len() > 0 {
+        if initial_pair_count > 0 && !initial_priorities.is_empty() {
             // At least verify the role was updated in pairs
             assert_eq!(
                 agent.candidate_pairs.len(),
@@ -2190,8 +2188,10 @@ fn test_role_conflict_both_controlling_smaller_tiebreaker_switches() -> Result<(
 #[test]
 fn test_role_conflict_both_controlling_larger_tiebreaker_stays() -> Result<()> {
     // Create agent with controlling role
-    let mut config = AgentConfig::default();
-    config.is_controlling = true;
+    let config = AgentConfig {
+        is_controlling: true,
+        ..Default::default()
+    };
     let mut agent = Agent::new(Instant::now(), Arc::new(config), test_crypto_provider())?;
 
     // Set a larger tiebreaker value
@@ -2286,8 +2286,10 @@ fn test_role_conflict_both_controlled_larger_tiebreaker_switches() -> Result<()>
     use crate::attributes::control::AttrControlled;
 
     // Create agent with controlled role
-    let mut config = AgentConfig::default();
-    config.is_controlling = false; // Controlled
+    let config = AgentConfig {
+        is_controlling: false,
+        ..Default::default()
+    }; // Controlled
     let mut agent = Agent::new(Instant::now(), Arc::new(config), test_crypto_provider())?;
 
     // Set a larger tiebreaker value
@@ -2388,8 +2390,10 @@ fn test_role_conflict_both_controlled_smaller_tiebreaker_stays() -> Result<()> {
     use crate::attributes::control::AttrControlled;
 
     // Create agent with controlled role
-    let mut config = AgentConfig::default();
-    config.is_controlling = false; // Controlled
+    let config = AgentConfig {
+        is_controlling: false,
+        ..Default::default()
+    }; // Controlled
     let mut agent = Agent::new(Instant::now(), Arc::new(config), test_crypto_provider())?;
 
     // Set a smaller tiebreaker value
@@ -3356,6 +3360,9 @@ fn test_stats_snapshot_reports_the_callers_instant_throughout() -> Result<()> {
     let pairs = a.get_candidate_pairs_stats(t(600));
     assert!(!pairs.is_empty(), "adding a remote candidate forms a pair");
     for p in &pairs {
+        assert!(p.first_request_timestamp.is_none());
+        assert!(p.last_request_timestamp.is_none());
+        assert!(p.last_response_timestamp.is_none());
         for (field, stamp) in [
             ("timestamp", p.timestamp),
             ("last_packet_sent_timestamp", p.last_packet_sent_timestamp),
@@ -3363,9 +3370,6 @@ fn test_stats_snapshot_reports_the_callers_instant_throughout() -> Result<()> {
                 "last_packet_received_timestamp",
                 p.last_packet_received_timestamp,
             ),
-            ("first_request_timestamp", p.first_request_timestamp),
-            ("last_request_timestamp", p.last_request_timestamp),
-            ("last_response_timestamp", p.last_response_timestamp),
             ("consent_expired_timestamp", p.consent_expired_timestamp),
         ] {
             assert_eq!(stamp, t(600), "{field} must report the caller's instant");

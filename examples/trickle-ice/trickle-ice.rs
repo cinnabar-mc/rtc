@@ -92,6 +92,10 @@ static INDEX: &str = "examples/trickle-ice/index.html";
 
 // Messages from WebSocket handler
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The signaling DTO follows the JSON description and candidate payloads directly."
+)]
 enum WsMessage {
     Offer(RTCSessionDescription),
     IceCandidate(RTCIceCandidateInit),
@@ -341,20 +345,20 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                 });
 
                                 // Add srflx candidate if peer connection exists
-                                if let Some(pc) = peer_connection.as_mut() {
-                                    if !srflx_candidate_added {
-                                        if let Err(e) = add_srflx_candidate(
-                                            pc,
-                                            xor_addr,
-                                            local_addr,
-                                            &mut ws_stream,
-                                        )
-                                        .await
-                                        {
-                                            error!("Failed to add srflx candidate: {}", e);
-                                        } else {
-                                            srflx_candidate_added = true;
-                                        }
+                                if let Some(pc) = peer_connection.as_mut()
+                                    && !srflx_candidate_added
+                                {
+                                    if let Err(e) = add_srflx_candidate(
+                                        pc,
+                                        xor_addr,
+                                        local_addr,
+                                        &mut ws_stream,
+                                    )
+                                    .await
+                                    {
+                                        error!("Failed to add srflx candidate: {}", e);
+                                    } else {
+                                        srflx_candidate_added = true;
                                     }
                                 }
 
@@ -400,15 +404,15 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                         relay_addr = Some(addr);
 
                         // Add relay candidate if peer connection exists
-                        if let Some(pc) = peer_connection.as_mut() {
-                            if !relay_candidate_added {
-                                if let Err(e) =
-                                    add_relay_candidate(pc, addr, local_addr, &mut ws_stream).await
-                                {
-                                    error!("Failed to add relay candidate: {}", e);
-                                } else {
-                                    relay_candidate_added = true;
-                                }
+                        if let Some(pc) = peer_connection.as_mut()
+                            && !relay_candidate_added
+                        {
+                            if let Err(e) =
+                                add_relay_candidate(pc, addr, local_addr, &mut ws_stream).await
+                            {
+                                error!("Failed to add relay candidate: {}", e);
+                            } else {
+                                relay_candidate_added = true;
                             }
                         }
                     }
@@ -427,19 +431,19 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                     TurnEvent::DataIndicationOrChannelData(_, from, data) => {
                         trace!("TURN relay received {} bytes from {}", data.len(), from);
                         // Forward to peer connection
-                        if let Some(pc) = peer_connection.as_mut() {
-                            if let Some(relay) = relay_addr {
-                                pc.handle_read(TaggedBytesMut {
-                                    now: Instant::now(),
-                                    transport: TransportContext {
-                                        local_addr: relay,
-                                        peer_addr: from,
-                                        ecn: None,
-                                        transport_protocol: TransportProtocol::UDP,
-                                    },
-                                    message: BytesMut::from(&data[..]),
-                                })?;
-                            }
+                        if let Some(pc) = peer_connection.as_mut()
+                            && let Some(relay) = relay_addr
+                        {
+                            pc.handle_read(TaggedBytesMut {
+                                now: Instant::now(),
+                                transport: TransportContext {
+                                    local_addr: relay,
+                                    peer_addr: from,
+                                    ecn: None,
+                                    transport_protocol: TransportProtocol::UDP,
+                                },
+                                message: BytesMut::from(&data[..]),
+                            })?;
                         }
                     }
                     _ => {}
@@ -537,21 +541,20 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
             }
 
             // Send periodic messages through data channel (every 3 seconds)
-            if let Some(channel_id) = data_channel_id {
-                if Instant::now().duration_since(last_send) >= Duration::from_secs(3) {
-                    if let Some(mut dc) = pc.data_channel(channel_id) {
-                        let message = chrono::Local::now().to_string();
-                        if let Err(e) = dc.send_text(Instant::now(), message) {
-                            println!(
-                                "{} - DataChannel closed, stopping send loop: {}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                e
-                            );
-                            data_channel_id = None;
-                        }
-                        last_send = Instant::now();
-                    }
+            if let Some(channel_id) = data_channel_id
+                && Instant::now().duration_since(last_send) >= Duration::from_secs(3)
+                && let Some(mut dc) = pc.data_channel(channel_id)
+            {
+                let message = chrono::Local::now().to_string();
+                if let Err(e) = dc.send_text(Instant::now(), message) {
+                    println!(
+                        "{} - DataChannel closed, stopping send loop: {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        e
+                    );
+                    data_channel_id = None;
                 }
+                last_send = Instant::now();
             }
 
             // Get next timeout - consider peer connection, STUN, and TURN
@@ -559,20 +562,18 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                 .poll_timeout()
                 .unwrap_or(Instant::now() + DEFAULT_TIMEOUT_DURATION);
 
-            if let Some(ref mut client) = stun_client {
-                if let Some(stun_timeout) = client.poll_timeout() {
-                    if stun_timeout < timeout {
-                        timeout = stun_timeout;
-                    }
-                }
+            if let Some(ref mut client) = stun_client
+                && let Some(stun_timeout) = client.poll_timeout()
+                && stun_timeout < timeout
+            {
+                timeout = stun_timeout;
             }
 
-            if let Some(ref mut client) = turn_client {
-                if let Some(turn_timeout) = client.poll_timeout() {
-                    if turn_timeout < timeout {
-                        timeout = turn_timeout;
-                    }
-                }
+            if let Some(ref mut client) = turn_client
+                && let Some(turn_timeout) = client.poll_timeout()
+                && turn_timeout < timeout
+            {
+                timeout = turn_timeout;
             }
 
             let delay = timeout.saturating_duration_since(Instant::now());
@@ -607,9 +608,9 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                         trace!("udp_socket read {} bytes from {}", n, peer_addr);
 
                         // Check if this is STUN response
-                        if let Some(ref mut client) = stun_client {
-                            if let Some(stun_addr) = stun_server_addr {
-                                if peer_addr == stun_addr {
+                        if let Some(ref mut client) = stun_client
+                            && let Some(stun_addr) = stun_server_addr
+                                && peer_addr == stun_addr {
                                     client.handle_read(TaggedBytesMut {
                                         now: Instant::now(),
                                         transport: TransportContext {
@@ -622,13 +623,11 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                     })?;
                                     continue;
                                 }
-                            }
-                        }
 
                         // Check if this is TURN response
-                        if let Some(ref mut client) = turn_client {
-                            if let Some(turn_addr) = turn_server_addr {
-                                if peer_addr == turn_addr {
+                        if let Some(ref mut client) = turn_client
+                            && let Some(turn_addr) = turn_server_addr
+                                && peer_addr == turn_addr {
                                     client.handle_read(TaggedBytesMut {
                                         now: Instant::now(),
                                         transport: TransportContext {
@@ -641,8 +640,6 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                     })?;
                                     continue;
                                 }
-                            }
-                        }
 
                         // Otherwise, it's WebRTC data
                         pc.handle_read(TaggedBytesMut {
@@ -673,17 +670,14 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                         println!("Adding remote ICE candidate: {}", candidate.candidate);
 
                                         // Extract peer address and create TURN permission if needed
-                                        if let (Some(ref mut client), Some(relay)) = (turn_client.as_mut(), relay_addr) {
-                                            if let Some(addr) = extract_address_from_candidate(&candidate.candidate) {
-                                                if !granted_permissions.contains(&addr) &&
-                                                   !pending_permissions.values().any(|&v| v == addr) {
-                                                    if let Some(tid) = client.relay(relay)?.create_permission(Instant::now(), addr)? {
+                                        if let (Some(ref mut client), Some(relay)) = (turn_client.as_mut(), relay_addr)
+                                            && let Some(addr) = extract_address_from_candidate(&candidate.candidate)
+                                                && !granted_permissions.contains(&addr) &&
+                                                   !pending_permissions.values().any(|&v| v == addr)
+                                                    && let Some(tid) = client.relay(relay)?.create_permission(Instant::now(), addr)? {
                                                         pending_permissions.insert(tid, addr);
                                                         println!("Requesting TURN permission for peer {}", addr);
                                                     }
-                                                }
-                                            }
-                                        }
 
                                         if let Err(e) = pc.add_remote_candidate(candidate) {
                                             eprintln!("Failed to add ICE candidate: {}", e);
@@ -732,20 +726,18 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
             // No peer connection yet, wait for offer - but still process STUN/TURN
             let mut timeout = Instant::now() + Duration::from_millis(100);
 
-            if let Some(ref mut client) = stun_client {
-                if let Some(stun_timeout) = client.poll_timeout() {
-                    if stun_timeout < timeout {
-                        timeout = stun_timeout;
-                    }
-                }
+            if let Some(ref mut client) = stun_client
+                && let Some(stun_timeout) = client.poll_timeout()
+                && stun_timeout < timeout
+            {
+                timeout = stun_timeout;
             }
 
-            if let Some(ref mut client) = turn_client {
-                if let Some(turn_timeout) = client.poll_timeout() {
-                    if turn_timeout < timeout {
-                        timeout = turn_timeout;
-                    }
-                }
+            if let Some(ref mut client) = turn_client
+                && let Some(turn_timeout) = client.poll_timeout()
+                && turn_timeout < timeout
+            {
+                timeout = turn_timeout;
             }
 
             let delay = timeout.saturating_duration_since(Instant::now());
@@ -777,9 +769,9 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                         trace!("udp_socket read {} bytes from {}", n, peer_addr);
 
                         // Check if this is STUN response
-                        if let Some(ref mut client) = stun_client {
-                            if let Some(stun_addr) = stun_server_addr {
-                                if peer_addr == stun_addr {
+                        if let Some(ref mut client) = stun_client
+                            && let Some(stun_addr) = stun_server_addr
+                                && peer_addr == stun_addr {
                                     client.handle_read(TaggedBytesMut {
                                         now: Instant::now(),
                                         transport: TransportContext {
@@ -791,13 +783,11 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                         message: BytesMut::from(&buf[..n]),
                                     })?;
                                 }
-                            }
-                        }
 
                         // Check if this is TURN response
-                        if let Some(ref mut client) = turn_client {
-                            if let Some(turn_addr) = turn_server_addr {
-                                if peer_addr == turn_addr {
+                        if let Some(ref mut client) = turn_client
+                            && let Some(turn_addr) = turn_server_addr
+                                && peer_addr == turn_addr {
                                     client.handle_read(TaggedBytesMut {
                                         now: Instant::now(),
                                         transport: TransportContext {
@@ -809,8 +799,6 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                         message: BytesMut::from(&buf[..n]),
                                     })?;
                                 }
-                            }
-                        }
                     }
                 }
                 // Handle WebSocket messages (waiting for offer)
@@ -846,7 +834,7 @@ async fn run_main_loop(cli: Cli) -> Result<()> {
                                                     urls: vec![format!("turn:{}:{}?transport=udp", cli.turn_host, cli.turn_port)],
                                                     username: cred[0].to_string(),
                                                     credential: cred[1].to_string(),
-                                                    ..Default::default()
+
                                                 });
                                             }
                                         }
@@ -1108,13 +1096,13 @@ fn extract_address_from_candidate(candidate_str: &str) -> Option<SocketAddr> {
 
     // Find IP address and port in the candidate string
     // Typical format: "candidate:<foundation> <component> <protocol> <priority> <IP> <port> typ <type>"
-    if parts.len() >= 6 {
-        if let (Ok(ip), Ok(port)) = (
+    if parts.len() >= 6
+        && let (Ok(ip), Ok(port)) = (
             parts[4].parse::<std::net::IpAddr>(),
             parts[5].parse::<u16>(),
-        ) {
-            return Some(SocketAddr::new(ip, port));
-        }
+        )
+    {
+        return Some(SocketAddr::new(ip, port));
     }
 
     None
@@ -1122,17 +1110,17 @@ fn extract_address_from_candidate(candidate_str: &str) -> Option<SocketAddr> {
 
 fn parse_ws_message(text: &str) -> Option<WsMessage> {
     // Try to parse as SessionDescription first
-    if let Ok(offer) = serde_json::from_str::<RTCSessionDescription>(text) {
-        if !offer.sdp.is_empty() {
-            return Some(WsMessage::Offer(offer));
-        }
+    if let Ok(offer) = serde_json::from_str::<RTCSessionDescription>(text)
+        && !offer.sdp.is_empty()
+    {
+        return Some(WsMessage::Offer(offer));
     }
 
     // Try to parse as ICE candidate
-    if let Ok(candidate) = serde_json::from_str::<RTCIceCandidateInit>(text) {
-        if !candidate.candidate.is_empty() {
-            return Some(WsMessage::IceCandidate(candidate));
-        }
+    if let Ok(candidate) = serde_json::from_str::<RTCIceCandidateInit>(text)
+        && !candidate.candidate.is_empty()
+    {
+        return Some(WsMessage::IceCandidate(candidate));
     }
 
     trace!("Unknown WebSocket message: {}", text);

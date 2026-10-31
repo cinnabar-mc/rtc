@@ -159,7 +159,6 @@ async fn run(
             rtcp_feedback: vec![],
         },
         payload_type: 111,
-        ..Default::default()
     };
 
     let video_codec = RTCRtpCodecParameters {
@@ -171,7 +170,6 @@ async fn run(
             rtcp_feedback: vec![],
         },
         payload_type: 96,
-        ..Default::default()
     };
 
     // Setup the codecs you want to use.
@@ -394,7 +392,7 @@ async fn run(
             res = message_rx.recv() => {
                 match res {
                     Ok(message) => {
-                        peer_connection.handle_write(TaggedRTCMessage { now: Instant::now(), message: message })?;
+                        peer_connection.handle_write(TaggedRTCMessage { now: Instant::now(), message })?;
                     }
                     Err(err) => {
                         eprintln!("write_rx error: {}", err);
@@ -405,7 +403,7 @@ async fn run(
             res = event_rx.recv() => {
                 match res {
                     Ok(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     Err(err) => {
                         eprintln!("event_rx error: {}", err);

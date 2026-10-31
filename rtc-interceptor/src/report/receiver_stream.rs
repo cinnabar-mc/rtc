@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(rr.reports[0].ssrc, 123456);
         assert_eq!(rr.reports[0].last_sequence_number, 0x03);
         // fraction_lost = 256 * 1 / 3 = 85
-        assert_eq!(rr.reports[0].fraction_lost, (256u32 * 1 / 3) as u8);
+        assert_eq!(rr.reports[0].fraction_lost, (256u32 / 3) as u8);
         assert_eq!(rr.reports[0].total_lost, 1);
     }
 
@@ -342,7 +342,7 @@ mod tests {
         // Extended sequence number: 1 cycle + 0x01
         assert_eq!(rr.reports[0].last_sequence_number, (1 << 16) | 0x01);
         // fraction_lost = 256 * 1 / 3 = 85
-        assert_eq!(rr.reports[0].fraction_lost, (256u32 * 1 / 3) as u8);
+        assert_eq!(rr.reports[0].fraction_lost, (256u32 / 3) as u8);
         assert_eq!(rr.reports[0].total_lost, 1);
     }
 

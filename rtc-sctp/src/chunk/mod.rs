@@ -17,6 +17,7 @@ pub(crate) mod chunk_shutdown;
 pub(crate) mod chunk_shutdown_ack;
 pub(crate) mod chunk_shutdown_complete;
 pub(crate) mod chunk_type;
+pub(crate) mod chunk_unknown;
 
 use chunk_header::*;
 use shared::error::{Error, Result};

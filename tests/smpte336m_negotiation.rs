@@ -28,7 +28,6 @@ fn application_codec() -> RTCRtpCodecParameters {
             rtcp_feedback: vec![],
         },
         payload_type: 96,
-        ..Default::default()
     }
 }
 
@@ -42,7 +41,6 @@ fn video_codec() -> RTCRtpCodecParameters {
             rtcp_feedback: vec![],
         },
         payload_type: 98,
-        ..Default::default()
     }
 }
 

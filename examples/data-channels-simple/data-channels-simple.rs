@@ -201,7 +201,7 @@ async fn run_webrtc(
         if let Some(pc) = peer_connection.as_mut() {
             // Poll for outgoing packets
             while let Some(msg) = pc.poll_write() {
-                pending_sends.push((msg.message.into(), msg.transport.peer_addr));
+                pending_sends.push((msg.message, msg.transport.peer_addr));
             }
 
             // Poll for events
@@ -240,11 +240,11 @@ async fn run_webrtc(
 
             // Poll for incoming messages
             while let Some(TaggedRTCMessage { message, .. }) = pc.poll_read() {
-                if let RTCMessage::DataChannelMessage(channel_id, dc_message) = message {
-                    if let Some(dc) = pc.data_channel(channel_id) {
-                        let msg_str = String::from_utf8_lossy(&dc_message.data);
-                        info!("Received from '{}': {}", dc.label(), msg_str);
-                    }
+                if let RTCMessage::DataChannelMessage(channel_id, dc_message) = message
+                    && let Some(dc) = pc.data_channel(channel_id)
+                {
+                    let msg_str = String::from_utf8_lossy(&dc_message.data);
+                    info!("Received from '{}': {}", dc.label(), msg_str);
                 }
             }
         }
@@ -292,20 +292,18 @@ async fn run_webrtc(
 
             // Handle ICE candidate from HTTP handler
             Some(candidate) = candidate_rx.recv() => {
-                if let Some(pc) = peer_connection.as_mut() {
-                    if let Err(e) = pc.add_remote_candidate(candidate) {
+                if let Some(pc) = peer_connection.as_mut()
+                    && let Err(e) = pc.add_remote_candidate(candidate) {
                         error!("Failed to add ICE candidate: {}", e);
                     }
-                }
             }
 
             // Handle timeout
             _ = &mut timer => {
-                if let Some(pc) = peer_connection.as_mut() {
-                    if let Err(e) = pc.handle_timeout(Instant::now()) {
+                if let Some(pc) = peer_connection.as_mut()
+                    && let Err(e) = pc.handle_timeout(Instant::now()) {
                         error!("Timeout handling error: {}", e);
                     }
-                }
             }
 
             // Handle incoming UDP packet
@@ -313,8 +311,8 @@ async fn run_webrtc(
                 match result {
                     Ok((n, peer_addr)) => {
                         trace!("Received {} bytes from {}", n, peer_addr);
-                        if let Some(pc) = peer_connection.as_mut() {
-                            if let Err(e) = pc.handle_read(TaggedBytesMut {
+                        if let Some(pc) = peer_connection.as_mut()
+                            && let Err(e) = pc.handle_read(TaggedBytesMut {
                                 now: Instant::now(),
                                 transport: TransportContext {
                                     local_addr,
@@ -326,7 +324,6 @@ async fn run_webrtc(
                             }) {
                                 error!("Error handling packet: {}", e);
                             }
-                        }
                     }
                     Err(e) => {
                         error!("Socket receive error: {}", e);

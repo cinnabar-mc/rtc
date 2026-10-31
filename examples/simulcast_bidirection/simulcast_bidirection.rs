@@ -143,7 +143,6 @@ async fn run(
             rtcp_feedback: vec![],
         },
         payload_type: 96,
-        ..Default::default()
     };
 
     media_engine.register_codec(video_codec.clone(), RtpCodecKind::Video)?;
@@ -200,9 +199,9 @@ async fn run(
         });
     }
     let output_track = MediaStreamTrack::new(
-        format!("rtc-rs_simulcast"),
-        format!("video_simulcast"),
-        format!("video_simulcast"),
+        "rtc-rs_simulcast".to_string(),
+        "video_simulcast".to_string(),
+        "video_simulcast".to_string(),
         RtpCodecKind::Video,
         codings,
     );
@@ -322,10 +321,9 @@ async fn run(
             match message {
                 RTCMessage::RtpPacket(track_id, mut rtp_packet) => {
                     // Get the receiver for this track
-                    let receiver_id = track_id2_receiver_id
+                    let receiver_id = *track_id2_receiver_id
                         .get(&track_id)
-                        .ok_or(Error::ErrRTPReceiverNotExisted)?
-                        .clone();
+                        .ok_or(Error::ErrRTPReceiverNotExisted)?;
                     let inbound_payload_type = rtp_packet.header.payload_type;
 
                     let (rid, incoming_codec) = {

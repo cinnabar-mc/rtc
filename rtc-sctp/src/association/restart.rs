@@ -39,21 +39,32 @@ impl Association {
         {
             return Ok(vec![]);
         }
-        // A random, single-use reference authenticates the retained parameters. Keeping
-        // one proposal bounds memory and avoids retaining attacker-supplied cookie bodies.
-        let mut tag = random::<u32>();
-        while tag == 0 || tag == self.my_verification_tag {
-            tag = random::<u32>();
-        }
-        let candidate = RestartCandidate {
-            cookie: ParamStateCookie::new(),
-            peer_init: init.clone(),
-            issued: now,
-            local_tag: tag,
-            local_tsn: self.my_next_tsn,
-            local_tie_tag: self.my_verification_tag,
-            peer_tie_tag: self.peer_verification_tag,
+        let duplicate = if let Some(candidate) = &self.pending_restart {
+            now >= candidate.issued
+                && now.duration_since(candidate.issued) <= Duration::from_secs(60)
+                && candidate.local_tie_tag == self.my_verification_tag
+                && candidate.peer_tie_tag == self.peer_verification_tag
+                && candidate.peer_init.marshal()? == init.marshal()?
+        } else {
+            false
         };
+        if !duplicate {
+            // Keep one proposal, but retransmit the same challenge for duplicate INITs.
+            let mut tag = random::<u32>();
+            while tag == 0 || tag == self.my_verification_tag {
+                tag = random::<u32>();
+            }
+            self.pending_restart = Some(Box::new(RestartCandidate {
+                cookie: ParamStateCookie::new(),
+                peer_init: init.clone(),
+                issued: now,
+                local_tag: tag,
+                local_tsn: self.my_next_tsn,
+                local_tie_tag: self.my_verification_tag,
+                peer_tie_tag: self.peer_verification_tag,
+            }));
+        }
+        let candidate = self.pending_restart.as_ref().unwrap();
         let mut ack = ChunkInit {
             is_ack: true,
             initiate_tag: candidate.local_tag,
@@ -68,7 +79,6 @@ impl Association {
             params: vec![Box::new(candidate.cookie.clone())],
         };
         ack.set_supported_extensions();
-        self.pending_restart = Some(Box::new(candidate));
         Ok(vec![Packet {
             common_header: CommonHeader {
                 source_port: self.source_port,
@@ -144,25 +154,41 @@ impl Association {
         replacement.stats = std::mem::take(&mut self.stats);
         replacement.bytes_sent = self.bytes_sent;
         replacement.bytes_received = self.bytes_received;
+        replacement
+            .events
+            .extend(self.events.drain(..).filter(|event| {
+                matches!(
+                    event,
+                    Event::Stream(StreamEvent::BufferedAmountReleased { .. })
+                )
+            }));
         for (id, mut stream) in std::mem::take(&mut self.streams) {
-            if stream.state != RecvSendState::ReadWritable {
+            if stream.buffered_amount != 0 {
+                replacement
+                    .events
+                    .push_back(Event::Stream(StreamEvent::BufferedAmountReleased {
+                        id,
+                        n_bytes: stream.buffered_amount,
+                    }));
+            }
+            if stream.state != RecvSendState::ReadWritable
+                || id >= replacement.my_max_num_inbound_streams
+                || id >= replacement.my_max_num_outbound_streams
+            {
+                replacement
+                    .events
+                    .push_back(Event::Stream(StreamEvent::Stopped {
+                        id,
+                        error_code: crate::chunk::INVALID_STREAM_IDENTIFIER,
+                    }));
                 continue;
             }
-            let released = stream.buffered_amount;
             stream.reassembly_queue = ReassemblyQueue::new(id);
             stream.sequence_number = 0;
             stream.buffered_amount = 0;
             stream.generation = replacement.next_stream_generation;
             replacement.next_stream_generation = replacement.next_stream_generation.wrapping_add(1);
             replacement.streams.insert(id, stream);
-            if released != 0 {
-                replacement
-                    .events
-                    .push_back(Event::Stream(StreamEvent::BufferedAmountReleased {
-                        id,
-                        n_bytes: released,
-                    }));
-            }
         }
         replacement
             .endpoint_events
@@ -285,5 +311,81 @@ mod tests {
             association.control_queue.is_empty(),
             "old-tag cookie must not trigger an ACK"
         );
+    }
+
+    #[test]
+    fn duplicate_restart_proposal_keeps_the_first_cookie_valid() {
+        let now = Instant::now();
+        let (mut association, packet, echo) = proposed_restart(now);
+        let init = association
+            .pending_restart
+            .as_ref()
+            .unwrap()
+            .peer_init
+            .clone();
+        let init_packet = Packet {
+            common_header: CommonHeader {
+                verification_tag: 0,
+                ..packet.common_header
+            },
+            chunks: vec![],
+        };
+        association
+            .handle_restart_init(&init_packet, &init, now + Duration::from_secs(1))
+            .unwrap();
+        assert!(
+            association
+                .accept_restart_cookie(&packet, &echo, now + Duration::from_secs(2))
+                .unwrap()
+        );
+        assert!(
+            !association
+                .accept_restart_cookie(&packet, &echo, now + Duration::from_secs(2))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn restart_releases_all_buffers_and_preserves_unpolled_accounting() {
+        let now = Instant::now();
+        let (mut association, packet, echo) = proposed_restart(now);
+        association
+            .open_stream(0, PayloadProtocolIdentifier::Binary)
+            .unwrap()
+            .write(now, b"ackretained")
+            .unwrap();
+        association
+            .open_stream(9, PayloadProtocolIdentifier::Binary)
+            .unwrap()
+            .write(now, b"removed")
+            .unwrap();
+        association
+            .open_stream(8, PayloadProtocolIdentifier::Binary)
+            .unwrap()
+            .write(now, b"closing")
+            .unwrap();
+        association.streams.get_mut(&8).unwrap().state = RecvSendState::Readable;
+        let mut acknowledged = FxHashMap::default();
+        acknowledged.insert(0, 3);
+        association.release_stream_buffers(&acknowledged);
+        let init = &mut association.pending_restart.as_mut().unwrap().peer_init;
+        init.num_inbound_streams = 1;
+        init.num_outbound_streams = 1;
+        assert!(
+            association
+                .accept_restart_cookie(&packet, &echo, now)
+                .unwrap()
+        );
+        let releases: usize = std::iter::from_fn(|| association.poll())
+            .filter_map(|event| match event {
+                Event::Stream(StreamEvent::BufferedAmountReleased { n_bytes, .. }) => Some(n_bytes),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(releases, 3 + 8 + 7 + 7);
+        assert_eq!(association.buffered_amount(), 0);
+        assert!(association.stream(0).unwrap().is_writable());
+        assert!(association.stream(9).is_err());
+        assert!(association.stream(8).is_err());
     }
 }

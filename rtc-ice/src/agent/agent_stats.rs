@@ -45,16 +45,16 @@ pub struct CandidatePairStats {
     /// excluding STUN packets.
     pub last_packet_received_timestamp: Instant,
 
-    /// The timestamp at which the first STUN request was sent on this particular candidate pair.
-    pub first_request_timestamp: Instant,
+    /// Absent until the first request is sent. The timestamp at which the first STUN request was sent on this particular candidate pair.
+    pub first_request_timestamp: Option<Instant>,
 
-    /// The timestamp at which the last STUN request was sent on this particular candidate pair.
+    /// Absent until a request is sent. The timestamp at which the last STUN request was sent on this particular candidate pair.
     /// The average interval between two consecutive connectivity checks sent can be calculated with
     /// (last_request_timestamp - first_request_timestamp) / requests_sent.
-    pub last_request_timestamp: Instant,
+    pub last_request_timestamp: Option<Instant>,
 
-    /// Timestamp at which the last STUN response was received on this particular candidate pair.
-    pub last_response_timestamp: Instant,
+    /// Absent until a response is received. Timestamp at which the last STUN response was received on this particular candidate pair.
+    pub last_response_timestamp: Option<Instant>,
 
     /// The sum of all round trip time measurements in seconds since the beginning of the session,
     /// based on STUN connectivity check responses (responses_received), including those that reply
@@ -115,10 +115,7 @@ pub struct CandidatePairStats {
 impl CandidatePairStats {
     /// An empty stats record stamped at `now`.
     ///
-    /// This replaces `Default`: every field here is a timestamp, and a `Default` impl cannot be
-    /// handed one — it would have to reach for the clock, which is what §3.1(c) of the design
-    /// removes. A `getStats` report taken under a virtual clock must read in virtual time
-    /// throughout, or it is more confusing than no report at all.
+    /// The snapshot uses caller time. Transaction timestamps remain absent until traffic occurs.
     pub fn new(now: Instant) -> Self {
         Self {
             timestamp: now,
@@ -132,9 +129,9 @@ impl CandidatePairStats {
             bytes_received: 0,
             last_packet_sent_timestamp: now,
             last_packet_received_timestamp: now,
-            first_request_timestamp: now,
-            last_request_timestamp: now,
-            last_response_timestamp: now,
+            first_request_timestamp: None,
+            last_request_timestamp: None,
+            last_response_timestamp: None,
             total_round_trip_time: 0.0,
             current_round_trip_time: 0.0,
             available_outgoing_bitrate: 0.0,
@@ -236,6 +233,9 @@ impl Agent {
                 responses_sent: cp.responses_sent,
                 responses_received: cp.responses_received,
                 consent_requests_sent: cp.consent_requests_sent,
+                first_request_timestamp: cp.first_request_timestamp,
+                last_request_timestamp: cp.last_request_timestamp,
+                last_response_timestamp: cp.last_response_timestamp,
                 // RTT tracking (convert Duration to seconds as f64)
                 total_round_trip_time: cp.total_round_trip_time.as_secs_f64(),
                 current_round_trip_time: cp.current_round_trip_time.as_secs_f64(),

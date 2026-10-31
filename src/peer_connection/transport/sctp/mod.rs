@@ -34,6 +34,9 @@ pub(crate) struct SctpTransport {
     // so we need a dedicated field
     pub(crate) is_started: bool,
 
+    /// Retains the terminal state after the last closed association is disposed.
+    pub(crate) is_closed: bool,
+
     // The *configured* ceiling from SettingEngine — an input to the negotiation below, not the
     // value W3C `maxMessageSize` reports. See `negotiated_max_message_size`.
     pub(crate) max_message_size: SctpMaxMessageSize,
@@ -70,6 +73,7 @@ impl SctpTransport {
             sctp_associations: HashMap::new(),
 
             is_started: false,
+            is_closed: false,
             max_message_size,
             negotiated_max_message_size: None,
             max_receive_buffer_size,
@@ -100,11 +104,10 @@ impl SctpTransport {
 
     /// W3C `SctpTransport.state`.
     ///
-    /// Derived from the association rather than tracked separately: the previous `state` field was
-    /// assigned once at construction and never updated or read, so any getter over it would have
-    /// reported `Connecting` for the lifetime of the connection.
+    /// Uses the live association, retaining Closed after its final disposal.
     pub(crate) fn state(&self) -> RTCSctpTransportState {
         match self.association() {
+            None if self.is_closed => RTCSctpTransportState::Closed,
             None => RTCSctpTransportState::Connecting,
             Some(association) if association.is_closed() => RTCSctpTransportState::Closed,
             Some(association) if association.is_handshaking() => RTCSctpTransportState::Connecting,

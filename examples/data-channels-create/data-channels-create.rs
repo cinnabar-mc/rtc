@@ -302,7 +302,7 @@ async fn run(
             res = message_rx.recv() => {
                 match res {
                     Ok(message) => {
-                        peer_connection.handle_write(TaggedRTCMessage { now: Instant::now(), message: message })?;
+                        peer_connection.handle_write(TaggedRTCMessage { now: Instant::now(), message })?;
                     }
                     Err(err) => {
                         eprintln!("write_rx error: {}", err);
@@ -313,7 +313,7 @@ async fn run(
             res = event_rx.recv() => {
                 match res {
                     Ok(event) => {
-                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event: event })?;
+                        peer_connection.handle_event(TaggedRTCEvent { now: Instant::now(), event })?;
                     }
                     Err(err) => {
                         eprintln!("event_rx error: {}", err);
@@ -325,8 +325,8 @@ async fn run(
                 let now = Instant::now();
                 peer_connection.handle_timeout(now)?;
 
-                if let Some(data_channel_id) = &data_channel_opened{
-                    if now > data_channel_last_sent + Duration::from_secs(5) {
+                if let Some(data_channel_id) = &data_channel_opened
+                    && now > data_channel_last_sent + Duration::from_secs(5) {
                         let mut dc = peer_connection
                                     .data_channel(*data_channel_id)
                                     .ok_or(Error::ErrDataChannelClosed)?;
@@ -336,7 +336,6 @@ async fn run(
                         dc.send_text(Instant::now(), message)?;
                         data_channel_last_sent = now;
                     }
-                }
             }
             res = socket.recv_from(&mut buf) => {
                 match res {

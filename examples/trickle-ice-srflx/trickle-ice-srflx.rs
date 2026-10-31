@@ -60,6 +60,10 @@ static INDEX: &str = "examples/trickle-ice-srflx/index.html";
 
 // Messages from WebSocket handler
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The signaling DTO follows the JSON description and candidate payloads directly."
+)]
 enum WsMessage {
     Offer(RTCSessionDescription),
     IceCandidate(RTCIceCandidateInit),
@@ -227,21 +231,20 @@ async fn run_main_loop() -> Result<()> {
             }
 
             // Send periodic messages through data channel (every 3 seconds)
-            if let Some(channel_id) = data_channel_id {
-                if Instant::now().duration_since(last_send) >= Duration::from_secs(3) {
-                    if let Some(mut dc) = pc.data_channel(channel_id) {
-                        let message = chrono::Local::now().to_string();
-                        if let Err(e) = dc.send_text(Instant::now(), message) {
-                            println!(
-                                "{} - DataChannel closed, stopping send loop: {}",
-                                chrono::Local::now().format("%H:%M:%S"),
-                                e
-                            );
-                            data_channel_id = None;
-                        }
-                        last_send = Instant::now();
-                    }
+            if let Some(channel_id) = data_channel_id
+                && Instant::now().duration_since(last_send) >= Duration::from_secs(3)
+                && let Some(mut dc) = pc.data_channel(channel_id)
+            {
+                let message = chrono::Local::now().to_string();
+                if let Err(e) = dc.send_text(Instant::now(), message) {
+                    println!(
+                        "{} - DataChannel closed, stopping send loop: {}",
+                        chrono::Local::now().format("%H:%M:%S"),
+                        e
+                    );
+                    data_channel_id = None;
                 }
+                last_send = Instant::now();
             }
 
             // Get next timeout
@@ -496,18 +499,12 @@ async fn gather_srflx_candidate(
         message: BytesMut::from(&buf[..n]),
     })?;
 
-    let xor_addr = if let Some(event) = client.poll_event() {
-        if let StunEvent::Message(msg) = event {
-            let mut xor_addr = XorMappedAddress::default();
-            xor_addr.get_from(&msg)?;
-            println!("Got response: {xor_addr}");
-            xor_addr
-        } else {
-            return Err(Error::ErrStunQuery);
-        }
-    } else {
+    let Some(StunEvent::Message(msg)) = client.poll_event() else {
         return Err(Error::ErrStunQuery);
     };
+    let mut xor_addr = XorMappedAddress::default();
+    xor_addr.get_from(&msg)?;
+    println!("Got response: {xor_addr}");
 
     client.close()?;
     Ok(xor_addr)
@@ -515,17 +512,17 @@ async fn gather_srflx_candidate(
 
 fn parse_ws_message(text: &str) -> Option<WsMessage> {
     // Try to parse as SessionDescription first
-    if let Ok(offer) = serde_json::from_str::<RTCSessionDescription>(text) {
-        if !offer.sdp.is_empty() {
-            return Some(WsMessage::Offer(offer));
-        }
+    if let Ok(offer) = serde_json::from_str::<RTCSessionDescription>(text)
+        && !offer.sdp.is_empty()
+    {
+        return Some(WsMessage::Offer(offer));
     }
 
     // Try to parse as ICE candidate
-    if let Ok(candidate) = serde_json::from_str::<RTCIceCandidateInit>(text) {
-        if !candidate.candidate.is_empty() {
-            return Some(WsMessage::IceCandidate(candidate));
-        }
+    if let Ok(candidate) = serde_json::from_str::<RTCIceCandidateInit>(text)
+        && !candidate.candidate.is_empty()
+    {
+        return Some(WsMessage::IceCandidate(candidate));
     }
 
     trace!("Unknown WebSocket message: {}", text);

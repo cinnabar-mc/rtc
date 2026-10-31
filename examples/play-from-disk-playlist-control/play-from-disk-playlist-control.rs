@@ -243,8 +243,8 @@ fn parse_playlist(path: &str) -> Result<Vec<OggTrack>> {
         let serial = page_header.serial;
 
         // Ensure track exists
-        if !tracks.contains_key(&serial) {
-            tracks.insert(serial, OggTrack::new(serial));
+        if let std::collections::hash_map::Entry::Vacant(e) = tracks.entry(serial) {
+            e.insert(OggTrack::new(serial));
             order.push(serial);
         }
 
@@ -519,7 +519,6 @@ async fn handle_whep_connection(
             rtcp_feedback: vec![],
         },
         payload_type: 111,
-        ..Default::default()
     };
 
     media_engine.register_codec(opus_codec.clone(), RtpCodecKind::Audio)?;
@@ -615,6 +614,10 @@ async fn handle_whep_connection(
 }
 
 /// Run the peer connection event loop
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This example keeps each independent input explicit at its entry point."
+)]
 async fn run_peer_connection(
     socket: UdpSocket,
     local_addr: std::net::SocketAddr,
@@ -698,20 +701,20 @@ async fn run_peer_connection(
 
         // Process data channel messages
         while let Some(TaggedRTCMessage { message, .. }) = peer_connection.poll_read() {
-            if let RTCMessage::DataChannelMessage(dc_id, dc_message) = message {
-                if dc_id == playlist_channel_id {
-                    let command = String::from_utf8_lossy(&dc_message.data)
-                        .trim()
-                        .to_lowercase();
-                    handle_playlist_command(
-                        &command,
-                        &tracks,
-                        &current_track,
-                        &switch_track,
-                        &mut peer_connection,
-                        playlist_channel_id,
-                    );
-                }
+            if let RTCMessage::DataChannelMessage(dc_id, dc_message) = message
+                && dc_id == playlist_channel_id
+            {
+                let command = String::from_utf8_lossy(&dc_message.data)
+                    .trim()
+                    .to_lowercase();
+                handle_playlist_command(
+                    &command,
+                    &tracks,
+                    &current_track,
+                    &switch_track,
+                    &mut peer_connection,
+                    playlist_channel_id,
+                );
             }
         }
 

@@ -42,6 +42,10 @@ struct Cli {
 }
 
 // Commands from HTTP server to event loop
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The signaling DTO follows the JSON description and candidate payloads directly."
+)]
 enum Command {
     AddIceCandidate(RTCIceCandidateInit),
     SetRemoteDescription(RTCSessionDescription),
@@ -286,15 +290,14 @@ async fn main() -> Result<()> {
         }
 
         // Send periodic messages
-        if let Some(channel_id) = data_channel_opened {
-            if Instant::now().duration_since(last_send) >= Duration::from_secs(5) {
-                if let Some(mut dc) = peer_connection.data_channel(channel_id) {
-                    let message = math_rand_alpha(15);
-                    println!("Sending '{}'", message);
-                    let _ = dc.send_text(Instant::now(), message);
-                    last_send = Instant::now();
-                }
-            }
+        if let Some(channel_id) = data_channel_opened
+            && Instant::now().duration_since(last_send) >= Duration::from_secs(5)
+            && let Some(mut dc) = peer_connection.data_channel(channel_id)
+        {
+            let message = math_rand_alpha(15);
+            println!("Sending '{}'", message);
+            let _ = dc.send_text(Instant::now(), message);
+            last_send = Instant::now();
         }
 
         // Get next timeout

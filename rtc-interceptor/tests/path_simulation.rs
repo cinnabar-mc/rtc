@@ -80,7 +80,6 @@ fn rtp(now: Instant, sequence_number: u16) -> TaggedPacket {
                 ..Default::default()
             },
             payload: vec![0xC0; PAYLOAD_BYTES].into(),
-            ..Default::default()
         })),
     }
 }
@@ -496,12 +495,12 @@ fn overuse_is_detected_on_a_queueing_path_and_not_on_a_steady_one() {
 
     assert!(!steady.is_empty(), "the steady run produced no readings");
     assert!(
-        !steady.iter().any(|usage| *usage == Usage::Over),
+        !steady.contains(&Usage::Over),
         "a healthy path must never be declared congested: {steady:?}"
     );
 
     assert!(
-        queueing.iter().any(|usage| *usage == Usage::Over),
+        queueing.contains(&Usage::Over),
         "a queue building must be detected, got {queueing:?}"
     );
 }

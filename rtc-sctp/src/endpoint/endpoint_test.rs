@@ -118,19 +118,16 @@ impl TestEndpoint {
             }
         }
 
-        while self.inbound.front().map_or(false, |x| x.0 <= now) {
+        while self.inbound.front().is_some_and(|x| x.0 <= now) {
             let (recv_time, ecn, packet) = self.inbound.pop_front().unwrap();
-            if let Some((ch, event)) = self.endpoint.handle(recv_time, remote, ecn, packet.into()) {
+            if let Some((ch, event)) = self.endpoint.handle(recv_time, remote, ecn, packet) {
                 match event {
                     DatagramEvent::NewAssociation(conn) => {
                         self.associations.insert(ch, conn);
                         self.accepted = Some(ch);
                     }
                     DatagramEvent::AssociationEvent(event) => {
-                        self.conn_events
-                            .entry(ch)
-                            .or_insert_with(VecDeque::new)
-                            .push_back(event);
+                        self.conn_events.entry(ch).or_default().push_back(event);
                     }
                 }
             }
@@ -138,12 +135,12 @@ impl TestEndpoint {
 
         let mut endpoint_events: Vec<(AssociationHandle, EndpointEvent)> = vec![];
         for (ch, conn) in self.associations.iter_mut() {
-            if self.timeout.map_or(false, |x| x <= now) {
+            if self.timeout.is_some_and(|x| x <= now) {
                 self.timeout = None;
                 conn.handle_timeout(now);
             }
 
-            for (_, mut events) in self.conn_events.drain() {
+            if let Some(mut events) = self.conn_events.remove(ch) {
                 for event in events.drain(..) {
                     conn.handle_event(event);
                 }
@@ -345,12 +342,12 @@ impl Pair {
     fn finish_connect(&mut self, client_ch: AssociationHandle, server_ch: AssociationHandle) {
         assert_matches!(
             self.client_conn_mut(client_ch).poll(),
-            Some(Event::Connected { .. })
+            Some(Event::Connected)
         );
 
         assert_matches!(
             self.server_conn_mut(server_ch).poll(),
-            Some(Event::Connected { .. })
+            Some(Event::Connected)
         );
     }
 
@@ -425,7 +422,7 @@ fn establish_session_pair(
     {
         let s1 = pair.server_conn_mut(server_ch).accept_stream().unwrap();
         if si != s1.stream_identifier {
-            return Err(Error::Other("si should match".to_owned()).into());
+            return Err(Error::Other("si should match".to_owned()));
         }
     }
     pair.drive();
@@ -435,15 +432,15 @@ fn establish_session_pair(
     let n = chunks.read(&mut buf)?;
 
     if n != hello_msg.len() {
-        return Err(Error::Other("received data must by 3 bytes".to_owned()).into());
+        return Err(Error::Other("received data must by 3 bytes".to_owned()));
     }
 
     if chunks.ppi != PayloadProtocolIdentifier::Dcep {
-        return Err(Error::Other("unexpected ppi".to_owned()).into());
+        return Err(Error::Other("unexpected ppi".to_owned()));
     }
 
-    if &buf[..n] != &hello_msg {
-        return Err(Error::Other("received data mismatch".to_owned()).into());
+    if buf[..n] != hello_msg {
+        return Err(Error::Other("received data mismatch".to_owned()));
     }
     pair.drive();
 
@@ -579,8 +576,8 @@ fn test_assoc_reliable_ordered_reordered() -> Result<()> {
 
     let si: u16 = 2;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -663,12 +660,12 @@ fn test_assoc_reliable_ordered_fragmented_then_defragmented() -> Result<()> {
 
     let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
     let mut sbufl = vec![0u8; 2000];
-    for i in 0..sbufl.len() {
-        sbufl[i] = (i & 0xff) as u8;
+    for (i, byte) in sbufl.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -727,12 +724,12 @@ fn test_assoc_reliable_unordered_fragmented_then_defragmented() -> Result<()> {
 
     let si: u16 = 4;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
     let mut sbufl = vec![0u8; 2000];
-    for i in 0..sbufl.len() {
-        sbufl[i] = (i & 0xff) as u8;
+    for (i, byte) in sbufl.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -791,8 +788,8 @@ fn test_assoc_reliable_unordered_ordered() -> Result<()> {
 
     let si: u16 = 5;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -1014,8 +1011,8 @@ fn test_assoc_unreliable_rexmit_ordered_no_fragment() -> Result<()> {
 
     let si: u16 = 1;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -1170,8 +1167,8 @@ fn test_assoc_unreliable_rexmit_ordered_fragment() -> Result<()> {
 
     let si: u16 = 1;
     let mut sbuf = vec![0u8; 2000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -1253,8 +1250,8 @@ fn test_assoc_unreliable_rexmit_unordered_no_fragment() -> Result<()> {
 
     let si: u16 = 2;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -1331,8 +1328,8 @@ fn test_assoc_unreliable_rexmit_unordered_fragment() -> Result<()> {
 
     let si: u16 = 1;
     let mut sbuf = vec![0u8; 2000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -1426,8 +1423,8 @@ fn test_assoc_timed_reliability_bounds_time_spent_in_pending_queue() -> Result<(
     let stall = Duration::from_secs(1);
 
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -1932,8 +1929,8 @@ fn test_assoc_unreliable_rexmit_timed_ordered() -> Result<()> {
 
     let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -2010,8 +2007,8 @@ fn test_assoc_unreliable_rexmit_timed_unordered() -> Result<()> {
 
     let si: u16 = 3;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::NoDelay, 0)?;
@@ -2107,8 +2104,8 @@ fn test_assoc_congestion_control_fast_retransmission() -> Result<()> {
 
     let si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::Normal, 0)?;
@@ -2200,8 +2197,8 @@ fn test_assoc_congestion_control_congestion_avoidance() -> Result<()> {
     let n_packets_to_send: u32 = 2000;
 
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) =
@@ -2330,8 +2327,8 @@ fn test_assoc_congestion_control_slow_reader() -> Result<()> {
     let n_packets_to_send: u32 = 130;
 
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) =
@@ -2439,8 +2436,8 @@ fn test_assoc_delayed_ack() -> Result<()> {
     let si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
     let mut rbuf = vec![0u8; 1500];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::AlwaysDelay, 0)?;
@@ -3033,7 +3030,7 @@ fn test_association_handle_packet_before_init() -> Result<()> {
                     destination_port: 1,
                     verification_tag: 0,
                 },
-                chunks: vec![Box::new(ChunkShutdownAck::default())],
+                chunks: vec![Box::new(ChunkShutdownAck)],
             },
         ),
         (
@@ -3044,7 +3041,7 @@ fn test_association_handle_packet_before_init() -> Result<()> {
                     destination_port: 1,
                     verification_tag: 0,
                 },
-                chunks: vec![Box::new(ChunkShutdownComplete::default())],
+                chunks: vec![Box::new(ChunkShutdownComplete)],
             },
         ),
     ];
@@ -3094,8 +3091,8 @@ fn test_association_handle_packet_before_init() -> Result<()> {
 fn test_old_rtx_on_regular_acks() -> Result<()> {
     let si: u16 = 6;
     let mut sbuf = vec![0u8; 1000];
-    for i in 0..sbuf.len() {
-        sbuf[i] = (i & 0xff) as u8;
+    for (i, byte) in sbuf.iter_mut().enumerate() {
+        *byte = (i & 0xff) as u8;
     }
 
     let (mut pair, client_ch, server_ch) = create_association_pair(AckMode::Normal, 0)?;
@@ -3116,7 +3113,7 @@ fn test_old_rtx_on_regular_acks() -> Result<()> {
         pair.client.drive(pair.time, pair.server.addr);
 
         // drop a few transmits
-        if i >= 5 && i < 10 {
+        if (5..10).contains(&i) {
             pair.client.outbound.clear();
         }
 
@@ -3279,7 +3276,7 @@ fn test_stats() -> Result<()> {
         );
         assert_eq!(conn.bytes_sent.load(Ordering::SeqCst), a.bytes_sent());
     } else {
-        assert!(false, "must be FakeEchoConn");
+        panic!( "must be FakeEchoConn");
     }
 
     Ok(())
@@ -3330,7 +3327,7 @@ fn create_assocs() -> Result<(Association, Association)> {
     tokio::pin!(timer1);
     let a1 = tokio::select! {
         _ = timer1.as_mut() =>{
-            assert!(false,"timed out waiting for a1");
+            panic!("timed out waiting for a1");
             return Err(Error::Other("timed out waiting for a1".to_owned()).into());
         },
         a1 = a1chan_rx.recv() => {
@@ -3342,7 +3339,7 @@ fn create_assocs() -> Result<(Association, Association)> {
     tokio::pin!(timer2);
     let a2 = tokio::select! {
         _ = timer2.as_mut() =>{
-            assert!(false,"timed out waiting for a2");
+            panic!("timed out waiting for a2");
             return Err(Error::Other("timed out waiting for a2".to_owned()).into());
         },
         a2 = a2chan_rx.recv() => {
@@ -3391,7 +3388,7 @@ fn test_association_shutdown() -> Result<()> {
     if let Ok(result) = tokio::time::timeout(Duration::from_secs(1), a1.shutdown()).await {
         assert!(result.is_ok(), "shutdown should be ok");
     } else {
-        assert!(false, "shutdown timeout");
+        panic!( "shutdown timeout");
     }
 
     {
@@ -3402,7 +3399,7 @@ fn test_association_shutdown() -> Result<()> {
         tokio::pin!(timer2);
         tokio::select! {
             _ = timer2.as_mut() =>{
-                assert!(false,"timed out waiting for a2 read loop to close");
+                panic!("timed out waiting for a2 read loop to close");
             },
             _ = close_loop_ch_rx.recv() => {
                 log::debug!("recv a2.close_loop_ch_rx");
@@ -3457,7 +3454,7 @@ fn test_association_shutdown_during_write() -> Result<()> {
                 if let Ok(result) = res {
                     assert!(result.is_ok(), "shutdown should be ok");
                 } else {
-                    assert!(false, "shutdown timeout");
+                    panic!( "shutdown timeout");
                 }
             }
             _ = writing_done_rx.recv() => {
@@ -3475,7 +3472,7 @@ fn test_association_shutdown_during_write() -> Result<()> {
         tokio::pin!(timer2);
         tokio::select! {
             _ = timer2.as_mut() =>{
-                assert!(false,"timed out waiting for a2 read loop to close");
+                panic!("timed out waiting for a2 read loop to close");
             },
             _ = close_loop_ch_rx.recv() => {
                 log::debug!("recv a2.close_loop_ch_rx");
@@ -3503,10 +3500,10 @@ fn deliver_to_server_rtc_style(
     let client_addr = pair.client.addr;
 
     while let Some((recv_time, ecn, packet)) = pair.server.inbound.pop_front() {
-        if let Some((ch, event)) =
-            pair.server
-                .endpoint
-                .handle(recv_time, client_addr, ecn, packet.into())
+        if let Some((ch, event)) = pair
+            .server
+            .endpoint
+            .handle(recv_time, client_addr, ecn, packet)
         {
             match event {
                 DatagramEvent::NewAssociation(conn) => {
@@ -3822,10 +3819,10 @@ fn deliver_to_server_rtc_style_no_read(pair: &mut Pair, server_ch: AssociationHa
     let client_addr = pair.client.addr;
     let mut n = 0;
     while let Some((recv_time, ecn, packet)) = pair.server.inbound.pop_front() {
-        if let Some((ch, event)) =
-            pair.server
-                .endpoint
-                .handle(recv_time, client_addr, ecn, packet.into())
+        if let Some((ch, event)) = pair
+            .server
+            .endpoint
+            .handle(recv_time, client_addr, ecn, packet)
         {
             match event {
                 DatagramEvent::NewAssociation(conn) => {
@@ -4021,5 +4018,279 @@ fn restart_cookies_do_not_route_from_another_transport_peer() -> Result<()> {
             .handle(pair.time, other, None, packet)
             .is_none()
     );
+    Ok(())
+}
+
+#[test]
+fn initial_packets_are_validated_before_registration() {
+    let now = Instant::now();
+    let local = "127.0.0.1:40000".parse().unwrap();
+    let remote = "127.0.0.1:40001".parse().unwrap();
+    let mut endpoint = Endpoint::new(
+        local,
+        TransportProtocol::UDP,
+        Arc::new(EndpointConfig::default()),
+        Some(Arc::new(server_config())),
+    );
+    for body in [
+        vec![1, 0, 0, 8, 0, 0, 0, 1],
+        vec![1, 0, 0, 20, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+    ] {
+        let mut raw = vec![0x13, 0x88, 0x13, 0x88, 0, 0, 0, 0, 0, 0, 0, 0];
+        raw.extend(body);
+        let mut raw = bytes::BytesMut::from(raw.as_slice());
+        let checksum = crate::util::generate_packet_checksum(&raw.clone().freeze());
+        raw[8..12].copy_from_slice(&checksum.to_le_bytes());
+        assert!(endpoint.handle(now, remote, None, raw.freeze()).is_none());
+        assert!(endpoint.associations.is_empty());
+        assert!(endpoint.association_ids.is_empty());
+    }
+}
+
+#[test]
+fn transmits_preserve_the_configured_transport() -> Result<()> {
+    let now = Instant::now();
+    let mut endpoint = Endpoint::new(
+        "127.0.0.1:40000".parse().unwrap(),
+        TransportProtocol::TCP,
+        Arc::new(EndpointConfig::default()),
+        None,
+    );
+    let (_, mut association) = endpoint
+        .connect(now, client_config(), "127.0.0.1:40001".parse().unwrap())
+        .unwrap();
+    assert_eq!(
+        association
+            .poll_transmit(now)
+            .unwrap()
+            .transport
+            .transport_protocol,
+        TransportProtocol::TCP
+    );
+    association.handle_timeout(now + Duration::from_secs(4));
+    assert_eq!(
+        association
+            .poll_transmit(now + Duration::from_secs(4))
+            .unwrap()
+            .transport
+            .transport_protocol,
+        TransportProtocol::TCP
+    );
+    Ok(())
+}
+
+#[test]
+fn duplicate_inits_route_by_carrier_and_sctp_ports() -> Result<()> {
+    let now = Instant::now();
+    let mut endpoint = Endpoint::new(
+        "127.0.0.1:40000".parse().unwrap(),
+        TransportProtocol::UDP,
+        Arc::new(EndpointConfig::default()),
+        Some(Arc::new(server_config())),
+    );
+    let (existing, _) = endpoint
+        .connect(now, client_config(), "127.0.0.1:40001".parse().unwrap())
+        .unwrap();
+    let tag = *endpoint.associations[existing.0].loc_cids.get(&0).unwrap();
+    for remote in ["127.0.0.1:40002", "127.0.0.1:40001"] {
+        for port in [5001, 5002] {
+            let packet = Packet {
+                common_header: CommonHeader {
+                    source_port: port,
+                    destination_port: 5000,
+                    verification_tag: 0,
+                },
+                chunks: vec![Box::new(ChunkInit {
+                    initiate_tag: tag,
+                    advertised_receiver_window_credit: 65536,
+                    num_inbound_streams: 10,
+                    num_outbound_streams: 10,
+                    initial_tsn: 100,
+                    ..Default::default()
+                })],
+            }
+            .marshal()?;
+            let (handle, event) = endpoint
+                .handle(now, remote.parse().unwrap(), None, packet.clone())
+                .unwrap();
+            assert!(matches!(event, DatagramEvent::NewAssociation(_)));
+            let (repeated, event) = endpoint
+                .handle(now, remote.parse().unwrap(), None, packet)
+                .unwrap();
+            assert_eq!(handle, repeated);
+            assert!(matches!(event, DatagramEvent::AssociationEvent(_)));
+        }
+    }
+    assert_eq!(endpoint.associations.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn empty_ordered_write_does_not_skip_a_message() -> Result<()> {
+    let (mut pair, client, server) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut pair, client, server, 0)?;
+    let now = pair.time;
+    assert_eq!(pair.client_stream(client, 0)?.write(now, b"")?, 0);
+    pair.client_stream(client, 0)?.write(now, b"after empty")?;
+    pair.drive();
+    let chunks = pair
+        .server_stream(server, 0)?
+        .read_sctp()?
+        .expect("ordered message must be deliverable");
+    assert_eq!(
+        chunks.to_payload(65536)?,
+        Bytes::from_static(b"after empty")
+    );
+    Ok(())
+}
+
+#[test]
+fn association_event_debug_formats_the_datagram() {
+    let event = AssociationEvent(AssociationEventInner::Datagram(TransportMessage {
+        now: Instant::now(),
+        transport: TransportContext {
+            local_addr: "127.0.0.1:40000".parse().unwrap(),
+            peer_addr: "127.0.0.1:40001".parse().unwrap(),
+            ecn: None,
+            transport_protocol: TransportProtocol::UDP,
+        },
+        message: Payload::PartialDecode(PartialDecode::default()),
+    }));
+    // Bound the writer so recursive formatting fails without exhausting the stack.
+    struct BoundedDebug(String);
+    impl std::fmt::Write for BoundedDebug {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            if self.0.len() + value.len() > 4096 {
+                return Err(std::fmt::Error);
+            }
+            self.0.push_str(value);
+            Ok(())
+        }
+    }
+    use std::fmt::Write;
+    let mut output = BoundedDebug(String::new());
+    assert!(write!(output, "{event:?}").is_ok());
+    assert!(output.0.contains("Datagram"));
+}
+
+#[test]
+fn test_driver_delivers_each_associations_own_payload() -> Result<()> {
+    let (mut first, first_client, first_server) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut first, first_client, first_server, 0)?;
+    let (mut second, second_client, second_server) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut second, second_client, second_server, 0)?;
+    let now = first.time;
+    let second_handle = AssociationHandle(first_server.0 + 1);
+    let mut events = Vec::new();
+    for (pair, client, server, payload) in [
+        (&mut first, first_client, first_server, b"first".as_slice()),
+        (
+            &mut second,
+            second_client,
+            second_handle,
+            b"second".as_slice(),
+        ),
+    ] {
+        pair.client_stream(client, 0)?.write(now, payload)?;
+        let outbound = pair.client_conn_mut(client).poll_transmit(now).unwrap();
+        if let Payload::RawEncode(packets) = outbound.message {
+            for packet in packets {
+                events.push((
+                    server,
+                    AssociationEvent(AssociationEventInner::Datagram(TransportMessage {
+                        now,
+                        transport: outbound.transport,
+                        message: Payload::PartialDecode(PartialDecode::unmarshal(&packet)?),
+                    })),
+                ));
+            }
+        }
+    }
+    let mut driver = first.server;
+    driver.socket = None;
+    driver.associations.insert(
+        second_handle,
+        second.server.associations.remove(&second_server).unwrap(),
+    );
+    for (handle, event) in events {
+        driver
+            .conn_events
+            .entry(handle)
+            .or_default()
+            .push_back(event);
+    }
+    driver.drive(now, second.client.addr);
+    for (handle, payload) in [
+        (first_server, b"first".as_slice()),
+        (second_handle, b"second".as_slice()),
+    ] {
+        let chunks = driver
+            .associations
+            .get_mut(&handle)
+            .unwrap()
+            .stream(0)?
+            .read_sctp()?
+            .unwrap();
+        assert_eq!(chunks.to_payload(65536)?, Bytes::copy_from_slice(payload));
+    }
+    Ok(())
+}
+
+#[test]
+fn heartbeat_ack_and_unknown_chunks_allow_bundled_data_and_required_reports() -> Result<()> {
+    use crate::chunk::chunk_heartbeat_ack::ChunkHeartbeatAck;
+    use crate::chunk::chunk_unknown::ChunkUnknown;
+    use crate::param::param_heartbeat_info::ParamHeartbeatInfo;
+    for unknown_type in [0x9f, 0xdf] {
+        let (mut pair, client, server) = create_association_pair(AckMode::NoDelay, 0)?;
+        establish_session_pair(&mut pair, client, server, 0)?;
+        let now = pair.time;
+        pair.client_stream(client, 0)?.write(now, b"bundled")?;
+        let outbound = pair.client_conn_mut(client).poll_transmit(now).unwrap();
+        let Payload::RawEncode(packets) = outbound.message else {
+            panic!("expected encoded DATA");
+        };
+        let mut packet = Packet::unmarshal(&packets[0])?;
+        packet.chunks.insert(
+            0,
+            Box::new(ChunkUnknown {
+                raw: Bytes::from(vec![unknown_type, 0, 0, 5, 42]),
+            }),
+        );
+        packet.chunks.insert(
+            0,
+            Box::new(ChunkHeartbeatAck {
+                params: vec![Box::new(ParamHeartbeatInfo {
+                    heartbeat_information: Bytes::from_static(b"ping"),
+                })],
+            }),
+        );
+        pair.server
+            .inbound
+            .push_back((now, None, packet.marshal()?));
+        pair.server.socket = None;
+        pair.server.drive(now, pair.client.addr);
+        assert!(!pair.server_conn_mut(server).is_closed());
+        let chunks = pair.server_stream(server, 0)?.read_sctp()?.unwrap();
+        assert_eq!(chunks.to_payload(65536)?, Bytes::from_static(b"bundled"));
+        let mut reports = Vec::new();
+        for output in pair.server.outbound.drain(..) {
+            if let Payload::RawEncode(packets) = output.message {
+                for wire in packets {
+                    let packet = Packet::unmarshal(&wire)?;
+                    for chunk in packet.chunks {
+                        if let Some(error) = chunk.as_any().downcast_ref::<ChunkError>() {
+                            reports.extend(error.error_causes.clone());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(reports.len(), usize::from(unknown_type & 0x40 != 0));
+        if let Some(report) = reports.first() {
+            assert_eq!(report.code, UNRECOGNIZED_CHUNK_TYPE);
+            assert_eq!(report.raw, Bytes::from(vec![unknown_type, 0, 0, 5, 42]));
+        }
+    }
     Ok(())
 }

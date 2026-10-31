@@ -353,7 +353,8 @@ impl<'a> SctpHandler<'a> {
     /// `flush_dirty` is set, after a burst of inbound packets has been ingested, so
     /// their SACKs coalesce into a single datagram.
     fn flush_transmits(&mut self, now: Instant) {
-        for conn in self.ctx.sctp_transport.sctp_associations.values_mut() {
+        let mut endpoint_events = Vec::new();
+        for (ch, conn) in &mut self.ctx.sctp_transport.sctp_associations {
             while let Some(x) = conn.poll_transmit(now) {
                 for transmit in split_transmit(x) {
                     if let Payload::RawEncode(raw_data) = transmit.message {
@@ -368,6 +369,30 @@ impl<'a> SctpHandler<'a> {
                         }
                     }
                 }
+            }
+            while let Some(event) = conn.poll_endpoint_event() {
+                endpoint_events.push((*ch, event));
+            }
+        }
+        self.apply_endpoint_events(endpoint_events);
+    }
+
+    /// Updates endpoint routing and removes bookkeeping only for completed associations.
+    fn apply_endpoint_events(&mut self, events: Vec<(AssociationHandle, EndpointEvent)>) {
+        let Some(endpoint) = self.ctx.sctp_transport.sctp_endpoint.as_mut() else {
+            return;
+        };
+        for (ch, event) in events {
+            let drained = event.is_drained();
+            endpoint.handle_event(ch, event);
+            if drained {
+                self.ctx.sctp_transport.sctp_associations.remove(&ch);
+                if self.ctx.sctp_transport.sctp_associations.is_empty() {
+                    self.ctx.sctp_transport.is_closed = true;
+                }
+                self.ctx.association_transport.remove(&ch);
+                self.ctx.pending_readable.retain(|(pch, _)| *pch != ch);
+                self.ctx.peer_opened_streams.retain(|(pch, _)| *pch != ch);
             }
         }
     }
@@ -543,7 +568,10 @@ impl<'a>
                 // would drop its final packets. Only the draining associations are
                 // touched, so non-draining ones keep coalescing and still flush
                 // normally in poll_write.
-                for (drained_ch, _event) in &endpoint_events {
+                for (drained_ch, _event) in endpoint_events
+                    .iter()
+                    .filter(|(_, event)| event.is_drained())
+                {
                     if let Some(conn) = sctp_associations.get_mut(drained_ch) {
                         while let Some(x) = conn.poll_transmit(now) {
                             for transmit in split_transmit(x) {
@@ -553,15 +581,7 @@ impl<'a>
                     }
                 }
 
-                for (ch, event) in endpoint_events {
-                    sctp_endpoint.handle_event(ch, event); // handle drain event
-                    sctp_associations.remove(&ch);
-                    // Drop the per-association bookkeeping with it, or a long-lived endpoint
-                    // accumulates entries for associations that no longer exist.
-                    self.ctx.association_transport.remove(&ch);
-                    self.ctx.pending_readable.retain(|(pch, _)| *pch != ch);
-                    self.ctx.peer_opened_streams.retain(|(pch, _)| *pch != ch);
-                }
+                self.apply_endpoint_events(endpoint_events);
             }
 
             for message in messages {
@@ -837,14 +857,7 @@ impl<'a>
 
         let mut transmits = vec![];
 
-        let (sctp_endpoint, sctp_associations) = (
-            self.ctx
-                .sctp_transport
-                .sctp_endpoint
-                .as_mut()
-                .ok_or(Error::ErrSCTPNotEstablished)?,
-            &mut self.ctx.sctp_transport.sctp_associations,
-        );
+        let sctp_associations = &mut self.ctx.sctp_transport.sctp_associations;
 
         let mut endpoint_events: Vec<(AssociationHandle, EndpointEvent)> = vec![];
         for (ch, conn) in sctp_associations.iter_mut() {
@@ -859,7 +872,10 @@ impl<'a>
         // Teardown safety (see handle_read): flush each draining association's final
         // packets before it is removed below, so the deferred flush doesn't drop
         // them. Non-draining associations flush normally in poll_write.
-        for (drained_ch, _event) in &endpoint_events {
+        for (drained_ch, _event) in endpoint_events
+            .iter()
+            .filter(|(_, event)| event.is_drained())
+        {
             if let Some(conn) = sctp_associations.get_mut(drained_ch) {
                 while let Some(x) = conn.poll_transmit(now) {
                     transmits.extend(split_transmit(x));
@@ -867,13 +883,7 @@ impl<'a>
             }
         }
 
-        for (ch, event) in endpoint_events {
-            sctp_endpoint.handle_event(ch, event); // handle drain event
-            sctp_associations.remove(&ch);
-            self.ctx.association_transport.remove(&ch);
-            self.ctx.pending_readable.retain(|(pch, _)| *pch != ch);
-            self.ctx.peer_opened_streams.retain(|(pch, _)| *pch != ch);
-        }
+        self.apply_endpoint_events(endpoint_events);
 
         for transmit in transmits {
             if let Payload::RawEncode(raw_data) = transmit.message {
@@ -1362,6 +1372,17 @@ mod tests {
     const CT_SHUTDOWN: u8 = 7;
     const CT_SHUTDOWN_COMPLETE: u8 = 14;
 
+    /// Drains the handler's normal outbound path and returns SCTP chunk types.
+    fn drain_handler_chunk_types(ctx: &mut SctpHandlerContext) -> Vec<u8> {
+        let mut handler = SctpHandler::new(ctx, 0);
+        std::iter::from_fn(|| handler.poll_write())
+            .filter_map(|message| match message.message {
+                RTCMessageInternal::Dtls(DTLSMessage::Raw(raw)) if raw.len() > 12 => Some(raw[12]),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// First SCTP chunk type of every datagram flushed into `write_outs`. The SCTP
     /// common header is a fixed 12 bytes (RFC 9260 §3.1), so the first chunk's type
     /// field is byte 12.
@@ -1732,39 +1753,20 @@ mod tests {
         }
     }
 
-    // handle_timeout teardown-safety block: a graceful shutdown queues both the
-    // `Drained` endpoint event AND the final SHUTDOWN datagram. handle_timeout
-    // collects the drain (removing the association) and must flush the SHUTDOWN
-    // *before* removal, or the peer would never learn the association closed.
     #[test]
-    fn handle_timeout_flushes_final_packet_before_drain() {
+    fn handle_timeout_keeps_an_incomplete_graceful_shutdown_registered() {
         let now = Instant::now();
         let e = establish();
-        let mut client_conn = e.client_conn;
-        client_conn
-            .shutdown()
-            .expect("shutdown from Established queues Drained + SHUTDOWN");
-
-        let mut ctx = client_ctx(now, e.client_ep, e.client_ch, client_conn);
+        let mut conn = e.client_conn;
+        conn.shutdown().expect("shutdown");
+        let mut ctx = client_ctx(now, e.client_ep, e.client_ch, conn);
+        SctpHandler::new(&mut ctx, 0)
+            .handle_timeout(now)
+            .expect("timeout");
         assert_eq!(ctx.sctp_transport.sctp_associations.len(), 1);
-
-        {
-            let mut handler = SctpHandler::new(&mut ctx, 0);
-            handler
-                .handle_timeout(Instant::now())
-                .expect("handle_timeout");
-        }
-
-        assert!(
-            ctx.sctp_transport.sctp_associations.is_empty(),
-            "draining association must be removed"
-        );
-        let flushed = flushed_chunk_types(&ctx);
-        assert!(
-            flushed.contains(&CT_SHUTDOWN),
-            "the final SHUTDOWN must be flushed before removal, not dropped \
-             (flushed chunk types: {flushed:?})"
-        );
+        let flushed = drain_handler_chunk_types(&mut ctx);
+        assert!(flushed.contains(&CT_SHUTDOWN));
+        assert_eq!(ctx.sctp_transport.sctp_associations.len(), 1);
     }
 
     const CT_ABORT: u8 = 6;
@@ -1822,11 +1824,7 @@ mod tests {
         }
     }
 
-    // handle_read teardown-safety block (+ the SctpMessage::Outbound arm): when the
-    // client, mid graceful-shutdown, receives the peer's SHUTDOWN_ACK it must emit a
-    // SHUTDOWN_COMPLETE. That inbound arrives via handle_read, which collects the
-    // Drained and removes the association — so the SHUTDOWN_COMPLETE has to be flushed
-    // in the same call.
+    // Flush SHUTDOWN-COMPLETE through poll_write before removing the association.
     #[test]
     fn handle_read_flushes_final_packet_before_drain() {
         let e = establish();
@@ -1874,11 +1872,8 @@ mod tests {
             }
         }
 
-        assert!(
-            ctx.sctp_transport.sctp_associations.is_empty(),
-            "draining association must be removed"
-        );
-        let flushed = flushed_chunk_types(&ctx);
+        let flushed = drain_handler_chunk_types(&mut ctx);
+        assert!(ctx.sctp_transport.sctp_associations.is_empty());
         assert!(
             flushed.contains(&CT_SHUTDOWN_COMPLETE),
             "the final SHUTDOWN_COMPLETE must be flushed before removal, not dropped \
@@ -1887,7 +1882,7 @@ mod tests {
     }
 
     // The teardown-safety flush must touch ONLY the draining association. With two
-    // live associations, draining A must flush A's final SHUTDOWN and remove A while
+    // live associations, draining A must flush A's final ABORT and remove A while
     // leaving B — and B's queued DATA — untouched (B keeps coalescing and is flushed
     // later in poll_write). The over-broad "flush every association" form would drain
     // B's DATA here too; this test rejects that.
@@ -1896,8 +1891,8 @@ mod tests {
         let now = Instant::now();
         let (client_ep, ch_a, mut conn_a, ch_b, mut conn_b) = establish_two();
 
-        // A: graceful shutdown -> Drained + a pending SHUTDOWN.
-        conn_a.shutdown().expect("shutdown A");
+        // A is closed with a final ABORT; B remains live.
+        conn_a.abort().expect("abort A");
         // B: queue DATA that is NOT yet flushed (stays pending in the association).
         conn_b
             .open_stream(1, PayloadProtocolIdentifier::Binary)
@@ -1945,8 +1940,8 @@ mod tests {
         // Only A's SHUTDOWN was flushed; B's DATA was NOT.
         let flushed = flushed_chunk_types(&ctx);
         assert!(
-            flushed.contains(&CT_SHUTDOWN),
-            "A's final SHUTDOWN must be flushed (flushed chunk types: {flushed:?})"
+            flushed.contains(&CT_ABORT),
+            "A's final ABORT must be flushed (flushed chunk types: {flushed:?})"
         );
         assert!(
             !flushed.contains(&CT_PAYLOAD_DATA),
@@ -2961,8 +2956,8 @@ mod tests {
             .sctp_associations
             .get_mut(&ch)
             .expect("association")
-            .shutdown()
-            .expect("shutdown");
+            .abort()
+            .expect("abort");
 
         SctpHandler::new(&mut ctx, SCTP_PIPELINE_READ_BACKLOG_LIMIT)
             .handle_timeout(now)
@@ -3092,6 +3087,53 @@ mod tests {
         assert_eq!(
             after, empty_window,
             "the abandoned fragments must be dropped and their window given back"
+        );
+    }
+    #[test]
+    fn an_authenticated_restart_updates_routing_without_removing_the_association() {
+        let now = Instant::now();
+        let mut e = establish();
+        let (replacement_handle, mut replacement) = e
+            .client_ep
+            .connect(
+                now,
+                ClientConfig::new(TransportConfig::default()),
+                server_addr(),
+            )
+            .expect("new client");
+        let mut ctx = client_ctx(now, e.server_ep, e.server_ch, e.server_conn);
+        for _ in 0..8 {
+            for packet in drain_transmits(&mut replacement, now) {
+                let mut message = raw_read(now, packet);
+                message.transport.local_addr = server_addr();
+                message.transport.peer_addr = client_addr();
+                SctpHandler::new(&mut ctx, 0)
+                    .handle_read(message)
+                    .expect("restart inbound");
+            }
+            let mut handler = SctpHandler::new(&mut ctx, 0);
+            while let Some(message) = handler.poll_write() {
+                if let RTCMessageInternal::Dtls(DTLSMessage::Raw(raw)) = message.message
+                    && let Some((handle, DatagramEvent::AssociationEvent(event))) =
+                        e.client_ep.handle(now, server_addr(), None, raw.freeze())
+                {
+                    assert_eq!(handle, replacement_handle);
+                    replacement.handle_event(event);
+                }
+            }
+            if !replacement.is_handshaking() {
+                break;
+            }
+        }
+        assert!(
+            !replacement.is_handshaking(),
+            "the restarted handshake completes"
+        );
+        assert!(
+            ctx.sctp_transport
+                .sctp_associations
+                .contains_key(&e.server_ch),
+            "a routing update retains the association"
         );
     }
 }

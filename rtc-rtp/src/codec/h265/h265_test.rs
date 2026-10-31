@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_h265_payload_packetizes_raw_single_nalu_without_annexb_prefix() -> Result<()> {
-    let mut pck = HevcPayloader::default();
+    let mut pck = HevcPayloader;
     let payload = Bytes::from_static(&[0x02, 0x01, 0xaa, 0xbb, 0xcc]);
 
     assert_eq!(pck.payload(1500, &payload)?, vec![payload]);
@@ -12,7 +12,7 @@ fn test_h265_payload_packetizes_raw_single_nalu_without_annexb_prefix() -> Resul
 
 #[test]
 fn test_h265_payload_fragmentation_sets_end_bit_on_last_fragment() -> Result<()> {
-    let mut pck = HevcPayloader::default();
+    let mut pck = HevcPayloader;
 
     let exact_mtu_payload = Bytes::from_static(&[0x00, 0x00, 0x01, 0x02, 0x01, 1, 2, 3, 4, 5, 6]);
     let exact_mtu_expected = vec![
@@ -34,7 +34,7 @@ fn test_h265_payload_fragmentation_sets_end_bit_on_last_fragment() -> Result<()>
 
 #[test]
 fn test_h265_payload_packetizes_idr_n_lp_instead_of_dropping_it() -> Result<()> {
-    let mut pck = HevcPayloader::default();
+    let mut pck = HevcPayloader;
     let idr_n_lp_payload = Bytes::from_static(&[
         0x00, 0x00, 0x01, 0x28, 0x01, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
     ]);
@@ -53,7 +53,7 @@ fn test_h265_payload_packetizes_idr_n_lp_instead_of_dropping_it() -> Result<()> 
 
 #[test]
 fn test_h265_payload_keeps_single_nalus_when_called_separately() -> Result<()> {
-    let mut pck = HevcPayloader::default();
+    let mut pck = HevcPayloader;
 
     assert_eq!(
         pck.payload(

@@ -62,12 +62,12 @@ fn main() -> Result<(), Error> {
         message: BytesMut::from(&buf[..n]),
     })?;
 
-    if let Some(event) = client.poll_event() {
-        if let StunEvent::Message(msg) = event {
-            let mut xor_addr = XorMappedAddress::default();
-            xor_addr.get_from(&msg)?;
-            println!("Got response: {xor_addr}");
-        }
+    if let Some(event) = client.poll_event()
+        && let StunEvent::Message(msg) = event
+    {
+        let mut xor_addr = XorMappedAddress::default();
+        xor_addr.get_from(&msg)?;
+        println!("Got response: {xor_addr}");
     }
 
     client.close()?;

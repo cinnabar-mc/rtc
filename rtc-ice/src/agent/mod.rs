@@ -1077,7 +1077,7 @@ impl Agent {
 
         // Track request sent on the candidate pair
         if let Some(pair_index) = self.find_pair(local_index, remote_index) {
-            self.candidate_pairs[pair_index].on_request_sent();
+            self.candidate_pairs[pair_index].on_request_sent(now);
         }
 
         self.send_stun(now, m, local_index, remote_index);
@@ -1425,6 +1425,7 @@ impl Agent {
                 let (ip, port) = (remote_addr.ip(), remote_addr.port());
 
                 let prflx_candidate_config = CandidatePeerReflexiveConfig {
+                    tcp_type: Default::default(),
                     base_config: CandidateConfig {
                         network: network_type.to_string(),
                         address: ip.to_string(),

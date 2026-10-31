@@ -47,13 +47,7 @@ impl fmt::Display for AssociationState {
 
 impl AssociationState {
     pub(crate) fn is_drained(&self) -> bool {
-        matches!(
-            *self,
-            AssociationState::ShutdownSent
-                | AssociationState::ShutdownAckSent
-                | AssociationState::ShutdownPending
-                | AssociationState::ShutdownReceived
-        )
+        *self == AssociationState::Closed
     }
 }
 
@@ -94,5 +88,29 @@ impl fmt::Display for AckState {
             AckState::Delay => "Delay",
         };
         write!(f, "{}", s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn drained_means_protocol_shutdown_has_completed() {
+        for state in [
+            AssociationState::CookieWait,
+            AssociationState::CookieEchoed,
+            AssociationState::Established,
+            AssociationState::ShutdownPending,
+            AssociationState::ShutdownReceived,
+            AssociationState::ShutdownSent,
+            AssociationState::ShutdownAckSent,
+            AssociationState::Closed,
+        ] {
+            assert_eq!(
+                state.is_drained(),
+                state == AssociationState::Closed,
+                "{state}"
+            );
+        }
     }
 }

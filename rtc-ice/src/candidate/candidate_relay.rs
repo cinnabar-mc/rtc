@@ -9,6 +9,9 @@ pub struct CandidateRelayConfig {
     /// The fields shared by every candidate type.
     pub base_config: CandidateConfig,
 
+    /// The TCP role, for ICE-TCP candidates.
+    pub tcp_type: TcpType,
+
     /// The base address this candidate was derived from, reported as `raddr`.
     pub rel_addr: String,
     /// The base port, reported as `rport`.
@@ -35,6 +38,8 @@ impl CandidateRelayConfig {
         Ok(Candidate {
             id: candidate_id,
             network_type,
+            network: self.base_config.network,
+            tcp_type: self.tcp_type,
             candidate_type: CandidateType::Relay,
             address: self.base_config.address,
             port: self.base_config.port,
