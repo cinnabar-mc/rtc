@@ -439,7 +439,7 @@ fn establish_session_pair(
         return Err(Error::Other("unexpected ppi".to_owned()));
     }
 
-    if &buf[..n] != &hello_msg {
+    if buf[..n] != hello_msg {
         return Err(Error::Other("received data mismatch".to_owned()));
     }
     pair.drive();

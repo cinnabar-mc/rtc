@@ -34,7 +34,7 @@ fn test_h26x_writer_h265_single_nal_preserves_header() {
 
 #[test]
 fn test_h26x_writer_h265_flushes_exact_full_tail_fragment() {
-    let mut payloader = HevcPayloader::default();
+    let mut payloader = HevcPayloader;
     let nalu = Bytes::from_static(&[0x00, 0x00, 0x01, 0x02, 0x01, 1, 2, 3, 4, 5, 6]);
     let packets = payloader.payload(6, &nalu).expect("packetize H265 NAL");
 
