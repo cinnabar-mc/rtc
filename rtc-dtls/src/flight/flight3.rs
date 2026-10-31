@@ -421,6 +421,16 @@ pub(crate) fn handle_server_key_exchange(
         state.identity_hint.clone_from(&h.identity_hint);
         state.pre_master_secret = prf_psk_pre_master_secret(&psk);
     } else {
+        // ClientHello always advertises this immutable configuration's curve list.
+        if !cfg.local_named_curves.contains(&h.named_curve) {
+            return Err((
+                Some(Alert {
+                    alert_level: AlertLevel::Fatal,
+                    alert_description: AlertDescription::IllegalParameter,
+                }),
+                Some(Error::ErrInvalidNamedCurve),
+            ));
+        }
         let mut local_keypair = match h
             .named_curve
             .generate_keypair_with_crypto(cfg.provider().crypto())
@@ -456,4 +466,51 @@ pub(crate) fn handle_server_key_exchange(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::curve::{EllipticCurveType, named_curve::NamedCurve};
+    use crate::signature_hash_algorithm::{
+        HashAlgorithm, SignatureAlgorithm, SignatureHashAlgorithm,
+    };
+
+    #[test]
+    fn server_key_exchange_rejects_a_curve_omitted_from_the_offer() {
+        let provider = crypto::default_provider().unwrap();
+        let mut cfg = HandshakeConfig::new(provider.clone());
+        cfg.local_named_curves = vec![NamedCurve::X25519];
+        let peer_key = NamedCurve::P256
+            .generate_keypair_with_crypto(provider.crypto())
+            .unwrap();
+        let exchange = HandshakeMessageServerKeyExchange {
+            identity_hint: Vec::new(),
+            elliptic_curve_type: EllipticCurveType::NamedCurve,
+            named_curve: NamedCurve::P256,
+            public_key: peer_key.public_key,
+            algorithm: SignatureHashAlgorithm {
+                hash: HashAlgorithm::Sha256,
+                signature: SignatureAlgorithm::Ecdsa,
+            },
+            signature: Vec::new(),
+        };
+        let mut state = State::new(provider.clone(), true);
+        let result = handle_server_key_exchange(&mut state, &cfg, &exchange);
+        assert!(matches!(
+            result,
+            Err((
+                Some(Alert {
+                    alert_description: AlertDescription::IllegalParameter,
+                    ..
+                }),
+                _
+            ))
+        ));
+        assert!(state.local_keypair.is_none());
+        assert!(state.pre_master_secret.is_empty());
+        cfg.local_named_curves.push(NamedCurve::P256);
+        handle_server_key_exchange(&mut state, &cfg, &exchange).unwrap();
+        assert_eq!(state.local_keypair.unwrap().curve, NamedCurve::P256);
+    }
 }
