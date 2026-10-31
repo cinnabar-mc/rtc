@@ -483,6 +483,39 @@ fn assert_verification_only_schemes(crypto: &dyn RTCCrypto) {
         )
         .unwrap();
 
+    let legacy_key = bytes(
+        "30818902818100b0df479c468b199069defbcf8bd9b8929bcf42d0988b86d17fa85d9b9457cb14d05371edc6a3b2554fdbe3ff86ca9c9fd04d40eb716aad39999886aac7b46080b9fd6c63f20a5263928fc8c3b4a26f8f5bfb0d0f4b1c5e19586bedd972aa04644d714d4b2424959a633a925ae66491a49a893a2a21560744e5a2ac4e218293670203010001",
+    );
+    let mut legacy_signature = bytes(
+        "a53b0d7dddceaa06b862f0d97d8fe77321a4d050159245ac98511793adcde576a8fd58637bfdf72a414841472426018fbf97b0e6b923a65a0503b70c75e1878a4fbf4850e15c70a8a6d27fd6be1ec09670e5f279389c6f1a905566f461ce468ce2e195a7cf87a7079ade30c6b131aed9fd2d3e788b4814308f00ce51d36135a0",
+    );
+    let legacy_public = PublicKey {
+        encoding: PublicKeyEncoding::RsaPkcs1Der,
+        bytes: &legacy_key,
+    };
+    crypto
+        .verify_signature(
+            SignatureScheme::RsaPkcs1Sha384,
+            legacy_public,
+            b"RTC legacy RSA SHA384 verification",
+            &legacy_signature,
+        )
+        .unwrap();
+    legacy_signature[0] ^= 1;
+    assert!(
+        crypto
+            .verify_signature(
+                SignatureScheme::RsaPkcs1Sha384,
+                PublicKey {
+                    encoding: PublicKeyEncoding::RsaPkcs1Der,
+                    bytes: &legacy_key
+                },
+                b"RTC legacy RSA SHA384 verification",
+                &legacy_signature
+            )
+            .is_err()
+    );
+
     let rsa_public_key = bytes(
         "3082010a0282010100b0f8c4868ce9bcd4d11632162c0376bb09dce2facadaa27a6d4ad01b217c0a29e036b1bfd0052254ec3d349383019d8fd2d5c895ac6790bcc6c4dfca7c26bbcf570ee3bdff70826f80e8254776d8e73b431e2bece3d7d515edd23ada88e2c7136ac796685df8a40ed38ce59eaefc2509e1b277a0363938eb8e998a3f9fd6f2ed011b969e48d89d76508904961f8d83756466eff0f1fd5e4621e8ff083fd0d6aa87b31e560c185a1862059ba0fa95f8125ac96bfc7e051c3996587dc1271bb3ebf49303314ee888ccc8441de13a59b0646d9375dfbcbd66c1435398e164bc4672fd63a2eef162a7c1ac7ddb3e9cdb68cfeacff01f036a557477b45172593727f50203010001",
     );
