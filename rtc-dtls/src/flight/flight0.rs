@@ -108,22 +108,6 @@ impl Flight for Flight0 {
     }
 }
 
-/// Hashes the core hello fields that RFC 6347 requires to stay unchanged on retry.
-pub(crate) fn client_hello_hash(
-    hello: &crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello,
-    cfg: &HandshakeConfig,
-) -> shared::error::Result<Vec<u8>> {
-    let mut normalized = hello.clone();
-    normalized.cookie.clear();
-    normalized.extensions.clear();
-    let mut raw = Vec::new();
-    normalized.marshal(&mut raw)?;
-    cfg.provider()
-        .crypto()
-        .hash(::crypto::HashAlgorithm::Sha256, &raw)
-        .map_err(|error| Error::Crypto(error.to_string()))
-}
-
 /// Selects parameters from the hello that belongs to the authenticated transcript.
 pub(crate) fn negotiate_client_hello(
     state: &mut State,

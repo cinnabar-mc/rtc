@@ -87,13 +87,7 @@ impl Flight for Flight2 {
                 ));
             }
 
-            let hash = client_hello_hash(client_hello, cfg).map_err(|error| (None, Some(error)))?;
-            let initial = cache
-                .initial_client_hello(cfg.initial_epoch)
-                .ok_or((None, Some(Error::ErrLengthMismatch)))?;
-            let initial_hash =
-                client_hello_hash(&initial, cfg).map_err(|error| (None, Some(error)))?;
-            if !crypto::constant_time_eq(&hash, &initial_hash) {
+            if !cache.client_hello_core_matches(cfg.initial_epoch) {
                 return Err((
                     Some(Alert {
                         alert_level: AlertLevel::Fatal,
@@ -240,6 +234,46 @@ mod tests {
         assert!(matches!(
             Flight2.parse(&mut state, &cache, &cfg),
             Err((None, None))
+        ));
+    }
+
+    #[test]
+    fn cookie_retry_binds_unknown_cipher_codes_on_the_wire() {
+        let provider = crypto::default_provider().unwrap();
+        let mut cfg = HandshakeConfig::new(provider.clone());
+        cfg.local_named_curves = vec![NamedCurve::X25519];
+        cfg.local_cipher_suites = vec![CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256];
+        let mut state = State::new(provider, false);
+        state.cookie = vec![7; 20];
+        let mut cache = HandshakeCache::new();
+        for sequence in 0..2u16 {
+            let mut offered = hello(NamedCurve::X25519, false);
+            offered.cipher_suites.push(CipherSuiteId::Unsupported);
+            if sequence != 0 {
+                offered.cookie = state.cookie.clone();
+            }
+            let mut handshake = Handshake::new(HandshakeMessage::ClientHello(offered));
+            handshake.handshake_header.message_sequence = sequence;
+            let mut raw = Vec::new();
+            handshake.marshal(&mut raw).unwrap();
+            let cookie_length = if sequence == 0 { 0 } else { state.cookie.len() };
+            // DTLS header, version/random, empty session ID, cookie vector, suite length and first suite.
+            let offset = 12 + 34 + 1 + 1 + cookie_length + 2 + 2;
+            raw[offset..offset + 2].copy_from_slice(&(0xabcd + sequence).to_be_bytes());
+            cache.push(raw, 0, sequence, HandshakeType::ClientHello, true);
+            if sequence == 0 {
+                Flight0.parse(&mut state, &cache, &cfg).unwrap();
+            }
+        }
+        assert!(matches!(
+            Flight2.parse(&mut state, &cache, &cfg),
+            Err((
+                Some(Alert {
+                    alert_description: AlertDescription::IllegalParameter,
+                    ..
+                }),
+                _
+            ))
         ));
     }
 }

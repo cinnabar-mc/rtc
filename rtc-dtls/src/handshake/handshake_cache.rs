@@ -73,23 +73,24 @@ impl HandshakeCache {
         true
     }
 
-    /// Reads the original offer already retained in the handshake transcript.
-    pub(crate) fn initial_client_hello(
-        &self,
-        epoch: u16,
-    ) -> Option<crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello> {
-        let item = self
-            .cache
-            .iter()
-            .filter(|item| {
-                item.typ == HandshakeType::ClientHello && item.is_client && item.epoch == epoch
-            })
-            .min_by_key(|item| item.message_sequence)?;
-        let handshake = Handshake::unmarshal(&mut item.data.as_slice()).ok()?;
-        match handshake.handshake_message {
-            HandshakeMessage::ClientHello(hello) => Some(hello),
-            _ => None,
-        }
+    /// Compares core hello bytes without normalizing unknown wire values.
+    pub(crate) fn client_hello_core_matches(&self, epoch: u16) -> bool {
+        let items = self.cache.iter().filter(|item| {
+            item.typ == HandshakeType::ClientHello && item.is_client && item.epoch == epoch
+        });
+        let (Some(first), Some(last)) = (
+            items.clone().min_by_key(|item| item.message_sequence),
+            items.max_by_key(|item| item.message_sequence),
+        ) else {
+            return false;
+        };
+        let (Some(original), Some(retry)) = (
+            client_hello_core(&first.data),
+            client_hello_core(&last.data),
+        ) else {
+            return false;
+        };
+        original == retry
     }
 
     /// Preserves the completed transcript without retaining new handshake messages.
@@ -319,4 +320,17 @@ impl HandshakeCache {
                 .map_err(|error| Error::Crypto(error.to_string())),
         }
     }
+}
+
+/// Borrows the version/random/session and cipher/compression vectors, excluding cookie/extensions.
+fn client_hello_core(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let body = data.get(HANDSHAKE_HEADER_LENGTH..)?;
+    let session_end = 35 + usize::from(*body.get(34)?);
+    let cookie_length = usize::from(*body.get(session_end)?);
+    let suites_start = session_end + 1 + cookie_length;
+    let suites_length = body.get(suites_start..suites_start + 2)?;
+    let compression_start =
+        suites_start + 2 + usize::from(u16::from_be_bytes([suites_length[0], suites_length[1]]));
+    let core_end = compression_start + 1 + usize::from(*body.get(compression_start)?);
+    Some((body.get(..session_end)?, body.get(suites_start..core_end)?))
 }
