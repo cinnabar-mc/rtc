@@ -130,7 +130,10 @@ impl State {
 
         let local_epoch = self.local_epoch;
         let remote_epoch = self.remote_epoch;
-        let sequence_number = self.local_sequence_number[local_epoch as usize];
+        let sequence_number = *self
+            .local_sequence_number
+            .get(local_epoch as usize)
+            .ok_or(Error::ErrCipherSuiteUnset)?;
         let cipher_suite_id = {
             match &self.cipher_suite {
                 Some(cipher_suite) => cipher_suite.id() as u16,
@@ -347,5 +350,18 @@ impl State {
         } else {
             Err(Error::CipherSuiteUnset)
         }
+    }
+}
+
+#[cfg(test)]
+mod completeness_test {
+    use super::*;
+    #[test]
+    fn framing_incomplete_state_is_fallible() {
+        assert!(
+            State::new(crypto::default_provider().unwrap(), true)
+                .marshal_binary()
+                .is_err()
+        );
     }
 }
