@@ -541,8 +541,10 @@ pub(crate) fn add_candidates_to_media_descriptions(
         candidate.set_component(1);
         m = append_candidate_if_new(&candidate, m);
 
-        candidate.set_component(2);
-        m = append_candidate_if_new(&candidate, m);
+        if m.media_name.media != MEDIA_SECTION_APPLICATION {
+            candidate.set_component(2);
+            m = append_candidate_if_new(&candidate, m);
+        }
     }
 
     if ice_gathering_state != RTCIceGatheringState::Complete {
