@@ -46,6 +46,11 @@ impl EndpointEvent {
 pub(crate) enum EndpointEventInner {
     /// The association has been drained
     Drained,
+    /// An authenticated restart replaced the local verification tag.
+    AssociationIdChanged {
+        previous: AssociationId,
+        current: AssociationId,
+    },
     /*// The association needs association identifiers
     NeedIdentifiers(Instant, u64),
     /// Stop routing Association ID for this sequence number to the Association

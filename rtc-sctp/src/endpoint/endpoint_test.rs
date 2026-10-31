@@ -3924,3 +3924,77 @@ fn test_abort_closes_both_sides() -> Result<()> {
     pair.client_conn_mut(client_ch).abort()?;
     Ok(())
 }
+
+#[test]
+fn authenticated_peer_restart_preserves_streams_and_discards_old_queued_writes() -> Result<()> {
+    let (mut pair, old_client, server) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut pair, old_client, server, 0)?;
+    let now = pair.time;
+    pair.server_stream(server, 0)?
+        .write(now, b"old queued write")?;
+    pair.client.endpoint = Endpoint::new(
+        pair.client.addr,
+        TransportProtocol::UDP,
+        Arc::new(EndpointConfig::default()),
+        None,
+    );
+    pair.client.associations.clear();
+    pair.client.conn_events.clear();
+    pair.client.timeout = None;
+    pair.client.inbound.clear();
+    pair.client.outbound.clear();
+    let replacement = pair.begin_connect(client_config());
+    for _ in 0..100 {
+        if !pair.step() {
+            break;
+        }
+    }
+    assert_eq!(
+        pair.server.associations.len(),
+        1,
+        "restart reuses the established association"
+    );
+    assert!(!pair.client_conn_mut(replacement).is_handshaking());
+    assert_eq!(pair.server_conn_mut(server).buffered_amount(), 0);
+    assert!(pair.server_stream(server, 0)?.read_sctp()?.is_none());
+    let now = pair.time;
+    pair.client_conn_mut(replacement)
+        .open_stream(0, PayloadProtocolIdentifier::Binary)?
+        .write(now, b"new generation")?;
+    pair.drive();
+    let chunks = pair.server_stream(server, 0)?.read_sctp()?.unwrap();
+    assert_eq!(
+        chunks.to_payload(65536)?,
+        Bytes::from_static(b"new generation")
+    );
+    let now = pair.time;
+    pair.server_stream(server, 0)?.write(now, b"reply")?;
+    pair.drive();
+    let chunks = pair.client_stream(replacement, 0)?.read_sctp()?.unwrap();
+    assert_eq!(chunks.to_payload(65536)?, Bytes::from_static(b"reply"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual before/after association benchmark"]
+fn benchmark_association_roundtrip() -> Result<()> {
+    let (mut pair, client, server) = create_association_pair(AckMode::NoDelay, 0)?;
+    establish_session_pair(&mut pair, client, server, 0)?;
+    pair.client.socket = None;
+    pair.server.socket = None;
+    let payload = Bytes::from(vec![0x5a; 1200]);
+    for sample in 0..5 {
+        let start = Instant::now();
+        for _ in 0..10_000 {
+            let now = pair.time;
+            pair.client_stream(client, 0)?.write(now, &payload)?;
+            pair.drive();
+            assert_eq!(
+                pair.server_stream(server, 0)?.read_sctp()?.unwrap().len(),
+                payload.len()
+            );
+        }
+        eprintln!("SCTP sample {sample}: {:?}/10000", start.elapsed());
+    }
+    Ok(())
+}

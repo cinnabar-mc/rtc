@@ -59,6 +59,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+mod restart;
 pub(crate) mod state;
 pub(crate) mod stats;
 pub(crate) mod stream;
@@ -195,6 +196,9 @@ pub struct Association {
     my_max_num_inbound_streams: u16,
     my_max_num_outbound_streams: u16,
     my_cookie: Option<ParamStateCookie>,
+    transport_config: Arc<TransportConfig>,
+    pending_restart: Option<Box<restart::RestartCandidate>>,
+    restart_generation: u64,
 
     pub(crate) payload_queue: PayloadQueue,
     inflight_queue: PayloadQueue,
@@ -299,6 +303,9 @@ impl Default for Association {
             my_max_num_inbound_streams: 0,
             my_max_num_outbound_streams: 0,
             my_cookie: None,
+            transport_config: Arc::new(TransportConfig::default()),
+            pending_restart: None,
+            restart_generation: 0,
 
             payload_queue: PayloadQueue::default(),
             inflight_queue: PayloadQueue::default(),
@@ -395,6 +402,7 @@ impl Association {
             handshake_completed: false,
             max_receive_buffer_size: config.max_receive_buffer_size(),
             max_message_size: config.max_message_size(),
+            transport_config: config.clone(),
             my_max_num_outbound_streams: config.max_num_outbound_streams(),
             my_max_num_inbound_streams: config.max_num_inbound_streams(),
             max_payload_size,
@@ -948,6 +956,33 @@ impl Association {
             return Ok(());
         }
 
+        if self.restart_generation != 0
+            && p.chunks.iter().any(|chunk| {
+                let any = chunk.as_any();
+                if any.downcast_ref::<ChunkInit>().is_some()
+                    || any.downcast_ref::<ChunkCookieEcho>().is_some()
+                {
+                    return false;
+                }
+                let reflected = any
+                    .downcast_ref::<ChunkAbort>()
+                    .is_some_and(|abort| abort.header().flags & 1 != 0)
+                    || any
+                        .downcast_ref::<ChunkShutdownComplete>()
+                        .is_some_and(|complete| complete.header().flags & 1 != 0);
+                let expected = if reflected {
+                    self.peer_verification_tag
+                } else {
+                    self.my_verification_tag
+                };
+                p.common_header.verification_tag != expected
+                    || p.common_header.source_port != self.destination_port
+                    || p.common_header.destination_port != self.source_port
+            })
+        {
+            return Ok(());
+        }
+
         self.handle_chunk_start();
 
         for c in &p.chunks {
@@ -984,7 +1019,11 @@ impl Association {
             if c.is_ack {
                 self.handle_init_ack(p, c, now)?
             } else {
-                self.handle_init(p, c)?
+                if self.handshake_completed {
+                    self.handle_restart_init(p, c, now)?
+                } else {
+                    self.handle_init(p, c)?
+                }
             }
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkAbort>() {
             let mut err_str = String::new();
@@ -1013,7 +1052,24 @@ impl Association {
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkHeartbeat>() {
             self.handle_heartbeat(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkCookieEcho>() {
-            self.handle_cookie_echo(c)?
+            if self.accept_restart_cookie(p, c, now)? {
+                vec![Packet {
+                    common_header: CommonHeader {
+                        source_port: self.source_port,
+                        destination_port: self.destination_port,
+                        verification_tag: self.peer_verification_tag,
+                    },
+                    chunks: vec![Box::new(ChunkCookieAck {})],
+                }]
+            } else if self.restart_generation != 0
+                && (p.common_header.verification_tag != self.my_verification_tag
+                    || p.common_header.source_port != self.destination_port
+                    || p.common_header.destination_port != self.source_port)
+            {
+                vec![]
+            } else {
+                self.handle_cookie_echo(c)?
+            }
         } else if chunk_any.downcast_ref::<ChunkCookieAck>().is_some() {
             self.handle_cookie_ack()?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkPayloadData>() {

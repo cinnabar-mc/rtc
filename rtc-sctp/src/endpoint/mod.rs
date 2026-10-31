@@ -14,7 +14,7 @@ use rustc_hash::FxHashMap;
 
 use crate::Payload;
 use crate::association::Association;
-use crate::chunk::chunk_type::CT_INIT;
+use crate::chunk::chunk_type::{CT_COOKIE_ECHO, CT_INIT};
 use crate::config::{ClientConfig, EndpointConfig, ServerConfig, TransportConfig};
 use crate::packet::PartialDecode;
 use crate::shared::{
@@ -100,6 +100,16 @@ impl Endpoint {
     /// Process `EndpointEvent`s emitted from related `Association`s
     pub fn handle_event(&mut self, ch: AssociationHandle, event: EndpointEvent) {
         match event.0 {
+            EndpointEventInner::AssociationIdChanged { previous, current } => {
+                if self.association_ids.get(&previous) == Some(&ch) {
+                    self.association_ids.remove(&previous);
+                }
+                self.association_ids.insert(current, ch);
+                let meta = &mut self.associations[ch.0];
+                meta.loc_cids.clear();
+                meta.loc_cids.insert(0, current);
+            }
+
             EndpointEventInner::Drained => {
                 let conn = self.associations.remove(ch.0);
                 self.association_ids_init.remove(&conn.init_cid);
@@ -144,6 +154,22 @@ impl Endpoint {
                 None
             }
         };
+
+        let known_ch = known_ch.or_else(|| {
+            if partial_decode.first_chunk_type != CT_INIT
+                && partial_decode.first_chunk_type != CT_COOKIE_ECHO
+            {
+                return None;
+            }
+            self.associations
+                .iter()
+                .find(|(_, meta)| {
+                    meta.initial_remote == remote
+                        && meta.local_port == partial_decode.common_header.destination_port
+                        && meta.peer_port == partial_decode.common_header.source_port
+                })
+                .map(|(index, _)| AssociationHandle(index))
+        });
 
         if let Some(ch) = known_ch {
             return Some((
@@ -259,6 +285,8 @@ impl Endpoint {
             },
         )));
 
+        self.associations[ch.0].local_port = conn.source_port;
+        self.associations[ch.0].peer_port = conn.destination_port;
         Some((ch, conn))
     }
 
@@ -288,6 +316,8 @@ impl Endpoint {
             cids_issued: 0,
             loc_cids: iter::once((0, local_aid)).collect(),
             initial_remote: remote_addr,
+            local_port: conn.source_port,
+            peer_port: conn.destination_port,
         });
 
         let ch = AssociationHandle(id);
@@ -323,6 +353,8 @@ pub(crate) struct AssociationMeta {
     /// Only needed to support associations with zero-length AIDs, which cannot migrate, so we don't
     /// bother keeping it up to date.
     initial_remote: SocketAddr,
+    local_port: u16,
+    peer_port: u16,
 }
 
 /// Internal identifier for an `Association` currently associated with an endpoint
