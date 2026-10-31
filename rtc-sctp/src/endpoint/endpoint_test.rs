@@ -4023,3 +4023,62 @@ fn restart_cookies_do_not_route_from_another_transport_peer() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn heartbeat_ack_and_unknown_chunks_allow_bundled_data_and_required_reports() -> Result<()> {
+    use crate::chunk::chunk_heartbeat_ack::ChunkHeartbeatAck;
+    use crate::chunk::chunk_unknown::ChunkUnknown;
+    use crate::param::param_heartbeat_info::ParamHeartbeatInfo;
+    for unknown_type in [0x9f, 0xdf] {
+        let (mut pair, client, server) = create_association_pair(AckMode::NoDelay, 0)?;
+        establish_session_pair(&mut pair, client, server, 0)?;
+        let now = pair.time;
+        pair.client_stream(client, 0)?.write(now, b"bundled")?;
+        let outbound = pair.client_conn_mut(client).poll_transmit(now).unwrap();
+        let Payload::RawEncode(packets) = outbound.message else {
+            panic!("expected encoded DATA");
+        };
+        let mut packet = Packet::unmarshal(&packets[0])?;
+        packet.chunks.insert(
+            0,
+            Box::new(ChunkUnknown {
+                raw: Bytes::from(vec![unknown_type, 0, 0, 5, 42]),
+            }),
+        );
+        packet.chunks.insert(
+            0,
+            Box::new(ChunkHeartbeatAck {
+                params: vec![Box::new(ParamHeartbeatInfo {
+                    heartbeat_information: Bytes::from_static(b"ping"),
+                })],
+            }),
+        );
+        pair.server
+            .inbound
+            .push_back((now, None, packet.marshal()?));
+        pair.server.socket = None;
+        pair.server.drive(now, pair.client.addr);
+        assert!(!pair.server_conn_mut(server).is_closed());
+        let chunks = pair.server_stream(server, 0)?.read_sctp()?.unwrap();
+        assert_eq!(chunks.to_payload(65536)?, Bytes::from_static(b"bundled"));
+        let mut reports = Vec::new();
+        for output in pair.server.outbound.drain(..) {
+            if let Payload::RawEncode(packets) = output.message {
+                for wire in packets {
+                    let packet = Packet::unmarshal(&wire)?;
+                    for chunk in packet.chunks {
+                        if let Some(error) = chunk.as_any().downcast_ref::<ChunkError>() {
+                            reports.extend(error.error_causes.clone());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(reports.len(), usize::from(unknown_type & 0x40 != 0));
+        if let Some(report) = reports.first() {
+            assert_eq!(report.code, UNRECOGNIZED_CHUNK_TYPE);
+            assert_eq!(report.raw, Bytes::from(vec![unknown_type, 0, 0, 5, 42]));
+        }
+    }
+    Ok(())
+}

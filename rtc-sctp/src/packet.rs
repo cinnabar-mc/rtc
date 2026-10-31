@@ -6,6 +6,7 @@ use crate::chunk::chunk_error::ChunkError;
 use crate::chunk::chunk_forward_tsn::ChunkForwardTsn;
 use crate::chunk::chunk_header::*;
 use crate::chunk::chunk_heartbeat::ChunkHeartbeat;
+use crate::chunk::chunk_heartbeat_ack::ChunkHeartbeatAck;
 use crate::chunk::chunk_init::ChunkInit;
 use crate::chunk::chunk_payload_data::ChunkPayloadData;
 use crate::chunk::chunk_reconfig::ChunkReconfig;
@@ -14,6 +15,7 @@ use crate::chunk::chunk_shutdown::ChunkShutdown;
 use crate::chunk::chunk_shutdown_ack::ChunkShutdownAck;
 use crate::chunk::chunk_shutdown_complete::ChunkShutdownComplete;
 use crate::chunk::chunk_type::*;
+use crate::chunk::chunk_unknown::ChunkUnknown;
 use crate::util::*;
 use shared::error::{Error, Result};
 
@@ -125,40 +127,7 @@ impl PartialDecode {
     }
 
     pub(crate) fn finish(self) -> Result<Packet> {
-        let mut chunks = vec![];
-        let mut offset = 0;
-        loop {
-            // Exact match, no more chunks
-            if offset == self.remaining.len() {
-                break;
-            } else if offset + CHUNK_HEADER_SIZE > self.remaining.len() {
-                return Err(Error::ErrParseSctpChunkNotEnoughData);
-            }
-
-            let chunk_buf = slice_chunk(&self.remaining, offset)?;
-            let ct = ChunkType(self.remaining[offset]);
-            let c: Box<dyn Chunk> = match ct {
-                CT_INIT => Box::new(ChunkInit::unmarshal(&chunk_buf)?),
-                CT_INIT_ACK => Box::new(ChunkInit::unmarshal(&chunk_buf)?),
-                CT_ABORT => Box::new(ChunkAbort::unmarshal(&chunk_buf)?),
-                CT_COOKIE_ECHO => Box::new(ChunkCookieEcho::unmarshal(&chunk_buf)?),
-                CT_COOKIE_ACK => Box::new(ChunkCookieAck::unmarshal(&chunk_buf)?),
-                CT_HEARTBEAT => Box::new(ChunkHeartbeat::unmarshal(&chunk_buf)?),
-                CT_PAYLOAD_DATA => Box::new(ChunkPayloadData::unmarshal(&chunk_buf)?),
-                CT_SACK => Box::new(ChunkSelectiveAck::unmarshal(&chunk_buf)?),
-                CT_RECONFIG => Box::new(ChunkReconfig::unmarshal(&chunk_buf)?),
-                CT_FORWARD_TSN => Box::new(ChunkForwardTsn::unmarshal(&chunk_buf)?),
-                CT_ERROR => Box::new(ChunkError::unmarshal(&chunk_buf)?),
-                CT_SHUTDOWN => Box::new(ChunkShutdown::unmarshal(&chunk_buf)?),
-                CT_SHUTDOWN_ACK => Box::new(ChunkShutdownAck::unmarshal(&chunk_buf)?),
-                CT_SHUTDOWN_COMPLETE => Box::new(ChunkShutdownComplete::unmarshal(&chunk_buf)?),
-                _ => return Err(Error::ErrUnmarshalUnknownChunkType),
-            };
-
-            let chunk_value_padding = get_padding_size(c.value_length());
-            offset += CHUNK_HEADER_SIZE + c.value_length() + chunk_value_padding;
-            chunks.push(c);
-        }
+        let chunks = decode_chunks(&self.remaining)?;
 
         Ok(Packet {
             common_header: self.common_header,
@@ -167,6 +136,50 @@ impl PartialDecode {
     }
 }
 
+/// Decodes one chunk sequence, retaining unknown chunks for action-bit reporting.
+fn decode_chunks(raw: &Bytes) -> Result<Vec<Box<dyn Chunk>>> {
+    let mut chunks = Vec::new();
+    let mut offset = 0;
+    while offset < raw.len() {
+        if offset + CHUNK_HEADER_SIZE > raw.len() {
+            return Err(Error::ErrParseSctpChunkNotEnoughData);
+        }
+        let chunk_buf = slice_chunk(raw, offset)?;
+        let ct = ChunkType(raw[offset]);
+        let mut stop = false;
+        let chunk: Box<dyn Chunk> = match ct {
+            CT_INIT | CT_INIT_ACK => Box::new(ChunkInit::unmarshal(&chunk_buf)?),
+            CT_ABORT => Box::new(ChunkAbort::unmarshal(&chunk_buf)?),
+            CT_COOKIE_ECHO => Box::new(ChunkCookieEcho::unmarshal(&chunk_buf)?),
+            CT_COOKIE_ACK => Box::new(ChunkCookieAck::unmarshal(&chunk_buf)?),
+            CT_HEARTBEAT => Box::new(ChunkHeartbeat::unmarshal(&chunk_buf)?),
+            CT_HEARTBEAT_ACK => Box::new(ChunkHeartbeatAck::unmarshal(&chunk_buf)?),
+            CT_PAYLOAD_DATA => Box::new(ChunkPayloadData::unmarshal(&chunk_buf)?),
+            CT_SACK => Box::new(ChunkSelectiveAck::unmarshal(&chunk_buf)?),
+            CT_RECONFIG => Box::new(ChunkReconfig::unmarshal(&chunk_buf)?),
+            CT_FORWARD_TSN => Box::new(ChunkForwardTsn::unmarshal(&chunk_buf)?),
+            CT_ERROR => Box::new(ChunkError::unmarshal(&chunk_buf)?),
+            CT_SHUTDOWN => Box::new(ChunkShutdown::unmarshal(&chunk_buf)?),
+            CT_SHUTDOWN_ACK => Box::new(ChunkShutdownAck::unmarshal(&chunk_buf)?),
+            CT_SHUTDOWN_COMPLETE => Box::new(ChunkShutdownComplete::unmarshal(&chunk_buf)?),
+            _ => {
+                stop = ct.0 & 0x80 == 0;
+                Box::new(ChunkUnknown::unmarshal(&chunk_buf)?)
+            }
+        };
+        offset += chunk_buf.len() + get_padding_size(chunk_buf.len());
+        chunks.push(chunk);
+        if stop {
+            break;
+        }
+    }
+    if offset > raw.len() {
+        return Err(Error::ErrParseSctpChunkNotEnoughData);
+    }
+    Ok(chunks)
+}
+
+/// Returns the declared wire chunk after validating its length.
 fn slice_chunk(raw: &Bytes, offset: usize) -> Result<Bytes> {
     let chunk_length = u16::from_be_bytes([raw[offset + 2], raw[offset + 3]]) as usize;
     if chunk_length < CHUNK_HEADER_SIZE {
@@ -222,40 +235,7 @@ impl Packet {
             return Err(Error::ErrChecksumMismatch);
         }
 
-        let mut chunks = vec![];
-        let mut offset = PACKET_HEADER_SIZE;
-        loop {
-            // Exact match, no more chunks
-            if offset == raw.len() {
-                break;
-            } else if offset + CHUNK_HEADER_SIZE > raw.len() {
-                return Err(Error::ErrParseSctpChunkNotEnoughData);
-            }
-
-            let chunk_buf = slice_chunk(raw, offset)?;
-            let ct = ChunkType(raw[offset]);
-            let c: Box<dyn Chunk> = match ct {
-                CT_INIT => Box::new(ChunkInit::unmarshal(&chunk_buf)?),
-                CT_INIT_ACK => Box::new(ChunkInit::unmarshal(&chunk_buf)?),
-                CT_ABORT => Box::new(ChunkAbort::unmarshal(&chunk_buf)?),
-                CT_COOKIE_ECHO => Box::new(ChunkCookieEcho::unmarshal(&chunk_buf)?),
-                CT_COOKIE_ACK => Box::new(ChunkCookieAck::unmarshal(&chunk_buf)?),
-                CT_HEARTBEAT => Box::new(ChunkHeartbeat::unmarshal(&chunk_buf)?),
-                CT_PAYLOAD_DATA => Box::new(ChunkPayloadData::unmarshal(&chunk_buf)?),
-                CT_SACK => Box::new(ChunkSelectiveAck::unmarshal(&chunk_buf)?),
-                CT_RECONFIG => Box::new(ChunkReconfig::unmarshal(&chunk_buf)?),
-                CT_FORWARD_TSN => Box::new(ChunkForwardTsn::unmarshal(&chunk_buf)?),
-                CT_ERROR => Box::new(ChunkError::unmarshal(&chunk_buf)?),
-                CT_SHUTDOWN => Box::new(ChunkShutdown::unmarshal(&chunk_buf)?),
-                CT_SHUTDOWN_ACK => Box::new(ChunkShutdownAck::unmarshal(&chunk_buf)?),
-                CT_SHUTDOWN_COMPLETE => Box::new(ChunkShutdownComplete::unmarshal(&chunk_buf)?),
-                _ => return Err(Error::ErrUnmarshalUnknownChunkType),
-            };
-
-            let chunk_value_padding = get_padding_size(c.value_length());
-            offset += CHUNK_HEADER_SIZE + c.value_length() + chunk_value_padding;
-            chunks.push(c);
-        }
+        let chunks = decode_chunks(&raw.slice(PACKET_HEADER_SIZE..))?;
 
         Ok(Packet {
             common_header: CommonHeader {
@@ -378,9 +358,7 @@ impl Packet {
 
         // Check values on the packet that are specific to a particular chunk type
         for c in &self.chunks {
-            if let Some(ci) = c.as_any().downcast_ref::<ChunkInit>()
-                && !ci.is_ack
-            {
+            if let Some(ci) = c.as_any().downcast_ref::<ChunkInit>() {
                 // An INIT or INIT ACK chunk MUST NOT be bundled with any other chunk.
                 // They MUST be the only chunks present in the SCTP packets that carry
                 // them.
@@ -390,7 +368,7 @@ impl Packet {
 
                 // A packet containing an INIT chunk MUST have a zero Verification
                 // Tag.
-                if self.common_header.verification_tag != 0 {
+                if !ci.is_ack && self.common_header.verification_tag != 0 {
                     return Err(Error::ErrInitChunkVerifyTagNotZero);
                 }
             }
@@ -685,5 +663,100 @@ mod test {
         assert_eq!(data.payload_type, PayloadProtocolIdentifier::Binary);
         assert_eq!(&data.user_data[..], &[0xaa, 0xbb, 0xcc, 0xdd]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod framing_regressions {
+    use super::*;
+    use crate::chunk::chunk_heartbeat_ack::ChunkHeartbeatAck;
+    use crate::param::param_heartbeat_info::ParamHeartbeatInfo;
+
+    /// Encodes a valid packet header with the supplied chunk bytes and checksum.
+    fn wire(chunks: &[u8]) -> Bytes {
+        let mut raw = BytesMut::from(&[0x13, 0x88, 0x13, 0x88, 0, 0, 0, 1, 0, 0, 0, 0][..]);
+        raw.extend_from_slice(chunks);
+        let checksum = generate_packet_checksum(&raw.clone().freeze());
+        raw[8..12].copy_from_slice(&checksum.to_le_bytes());
+        raw.freeze()
+    }
+
+    #[test]
+    fn unknown_chunk_actions_preserve_prior_data_and_skip_when_allowed() -> Result<()> {
+        let data = ChunkPayloadData {
+            beginning_fragment: true,
+            ending_fragment: true,
+            user_data: Bytes::from_static(b"data"),
+            ..Default::default()
+        }
+        .marshal()?;
+        for typ in [0x3f, 0x7f, 0x9f, 0xdf] {
+            let mut chunks = data.to_vec();
+            chunks.extend_from_slice(&[typ, 0, 0, 5, 42, 0, 0, 0]);
+            chunks.extend_from_slice(&data);
+            let raw = wire(&chunks);
+            for packet in [
+                Packet::unmarshal(&raw)?,
+                PartialDecode::unmarshal(&raw)?.finish()?,
+            ] {
+                let data_count = packet
+                    .chunks
+                    .iter()
+                    .filter(|c| c.as_any().is::<ChunkPayloadData>())
+                    .count();
+                assert_eq!(data_count, if typ & 0x80 != 0 { 2 } else { 1 });
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn heartbeat_ack_is_decoded_alone_and_bundled() -> Result<()> {
+        let ack = ChunkHeartbeatAck {
+            params: vec![Box::new(ParamHeartbeatInfo {
+                heartbeat_information: Bytes::from_static(b"ping"),
+            })],
+        }
+        .marshal()?;
+        let data = ChunkPayloadData {
+            user_data: Bytes::from_static(b"data"),
+            ..Default::default()
+        }
+        .marshal()?;
+        for bundle in [false, true] {
+            let mut chunks = ack.to_vec();
+            if bundle {
+                chunks.extend_from_slice(&data);
+            }
+            let raw = wire(&chunks);
+            for packet in [
+                Packet::unmarshal(&raw)?,
+                PartialDecode::unmarshal(&raw)?.finish()?,
+            ] {
+                assert!(packet.chunks[0].as_any().is::<ChunkHeartbeatAck>());
+                assert_eq!(packet.chunks.len(), if bundle { 2 } else { 1 });
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handshake_chunks_cannot_be_bundled() {
+        for is_ack in [false, true] {
+            let mut packet = Packet {
+                common_header: CommonHeader {
+                    source_port: 5000,
+                    destination_port: 5000,
+                    verification_tag: u32::from(is_ack),
+                },
+                chunks: vec![Box::new(ChunkInit {
+                    is_ack,
+                    ..Default::default()
+                })],
+            };
+            assert!(packet.check_packet().is_ok());
+            packet.chunks.push(Box::new(ChunkCookieAck {}));
+            assert!(packet.check_packet().is_err());
+        }
     }
 }

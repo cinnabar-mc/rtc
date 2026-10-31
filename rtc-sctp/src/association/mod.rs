@@ -1018,12 +1018,10 @@ impl Association {
         let packets = if let Some(c) = chunk_any.downcast_ref::<ChunkInit>() {
             if c.is_ack {
                 self.handle_init_ack(p, c, now)?
+            } else if self.handshake_completed {
+                self.handle_restart_init(p, c, now)?
             } else {
-                if self.handshake_completed {
-                    self.handle_restart_init(p, c, now)?
-                } else {
-                    self.handle_init(p, c)?
-                }
+                self.handle_init(p, c)?
             }
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkAbort>() {
             let mut err_str = String::new();
@@ -1086,6 +1084,28 @@ impl Association {
             self.handle_shutdown_ack(c)?
         } else if let Some(c) = chunk_any.downcast_ref::<ChunkShutdownComplete>() {
             self.handle_shutdown_complete(c)?
+        } else if chunk_any.is::<ChunkHeartbeatAck>() {
+            vec![]
+        } else if let Some(c) =
+            chunk_any.downcast_ref::<crate::chunk::chunk_unknown::ChunkUnknown>()
+        {
+            if c.raw[0] & 0x40 == 0 {
+                vec![]
+            } else {
+                vec![Packet {
+                    common_header: CommonHeader {
+                        source_port: self.source_port,
+                        destination_port: self.destination_port,
+                        verification_tag: self.peer_verification_tag,
+                    },
+                    chunks: vec![Box::new(ChunkError {
+                        error_causes: vec![ErrorCauseUnrecognizedChunkType {
+                            code: crate::chunk::UNRECOGNIZED_CHUNK_TYPE,
+                            raw: c.raw.clone(),
+                        }],
+                    })],
+                }]
+            }
         } else {
             return Err(Error::ErrChunkTypeUnhandled);
         };
