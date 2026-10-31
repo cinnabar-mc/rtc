@@ -42,6 +42,7 @@ fn to_bytes(data: &[u8]) -> Bytes {
     Bytes::copy_from_slice(data)
 }
 
+/// Decodes an SCTP packet from arbitrary bytes for fuzzing.
 pub fn packet_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = Packet::unmarshal(&raw)?;
@@ -108,174 +109,203 @@ pub fn bench_packet_marshal(data: &[u8], iterations: u64) -> Result<usize> {
     Ok(last)
 }
 
+/// Decodes an SCTP packet partial decode from arbitrary bytes for fuzzing.
 pub fn packet_partial_decode_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = PartialDecode::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk header from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_header_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkHeader::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk abort from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_abort_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkAbort::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk cookie ack from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_cookie_ack_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkCookieAck::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk cookie echo from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_cookie_echo_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkCookieEcho::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk error from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_error_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkError::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk forward tsn from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_forward_tsn_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkForwardTsn::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk forward tsn stream from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_forward_tsn_stream_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkForwardTsnStream::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk heartbeat from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_heartbeat_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkHeartbeat::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk heartbeat ack from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_heartbeat_ack_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkHeartbeatAck::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk init from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_init_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkInit::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk payload data from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_payload_data_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkPayloadData::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk reconfig from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_reconfig_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkReconfig::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk selective ack from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_selective_ack_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkSelectiveAck::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk shutdown from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_shutdown_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkShutdown::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk shutdown ack from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_shutdown_ack_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkShutdownAck::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk shutdown complete from arbitrary bytes for fuzzing.
 pub fn chunk_chunk_shutdown_complete_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ChunkShutdownComplete::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP chunk error cause from arbitrary bytes for fuzzing.
 pub fn chunk_error_cause_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ErrorCause::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter header from arbitrary bytes for fuzzing.
 pub fn param_param_header_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamHeader::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter forward tsn supported from arbitrary bytes for fuzzing.
 pub fn param_param_forward_tsn_supported_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamForwardTsnSupported::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter supported extensions from arbitrary bytes for fuzzing.
 pub fn param_param_supported_extensions_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamSupportedExtensions::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter random from arbitrary bytes for fuzzing.
 pub fn param_param_random_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamRandom::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter requested hmac algorithm from arbitrary bytes for fuzzing.
 pub fn param_param_requested_hmac_algorithm_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamRequestedHmacAlgorithm::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter chunk list from arbitrary bytes for fuzzing.
 pub fn param_param_chunk_list_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamChunkList::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter state cookie from arbitrary bytes for fuzzing.
 pub fn param_param_state_cookie_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamStateCookie::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter heartbeat info from arbitrary bytes for fuzzing.
 pub fn param_param_heartbeat_info_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamHeartbeatInfo::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter outgoing reset request from arbitrary bytes for fuzzing.
 pub fn param_param_outgoing_reset_request_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamOutgoingResetRequest::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter reconfig response from arbitrary bytes for fuzzing.
 pub fn param_param_reconfig_response_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamReconfigResponse::unmarshal(&raw)?;
     Ok(())
 }
 
+/// Decodes an SCTP parameter unknown from arbitrary bytes for fuzzing.
 pub fn param_param_unknown_unmarshal(data: &[u8]) -> Result<()> {
     let raw = to_bytes(data);
     let _ = ParamUnknown::unmarshal(&raw)?;

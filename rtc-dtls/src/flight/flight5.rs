@@ -370,7 +370,9 @@ impl Flight for Flight5 {
         // If the client has sent a certificate with signing ability, a digitally-signed
         // CertificateVerify message is sent to explicitly verify possession of the
         // private key in the certificate.
-        if state.remote_requested_certificate && certificate.is_some() {
+        if state.remote_requested_certificate
+            && let Some(certificate) = &certificate
+        {
             let mut plain_text = cache.pull_and_merge(&[
                 HandshakeCachePullRule {
                     typ: HandshakeType::ClientHello,
@@ -425,26 +427,24 @@ impl Flight for Flight5 {
             plain_text.extend_from_slice(&merged);
 
             // Find compatible signature scheme
-            let signature_hash_algo = match select_signature_scheme(
-                &signature_schemes,
-                &certificate.as_ref().unwrap().private_key,
-            ) {
-                Ok(s) => s,
-                Err(err) => {
-                    return Err((
-                        Some(Alert {
-                            alert_level: AlertLevel::Fatal,
-                            alert_description: AlertDescription::InsufficientSecurity,
-                        }),
-                        Some(err),
-                    ));
-                }
-            };
+            let signature_hash_algo =
+                match select_signature_scheme(&signature_schemes, &certificate.private_key) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        return Err((
+                            Some(Alert {
+                                alert_level: AlertLevel::Fatal,
+                                alert_description: AlertDescription::InsufficientSecurity,
+                            }),
+                            Some(err),
+                        ));
+                    }
+                };
 
             let cert_verify = match generate_certificate_verify(
                 &plain_text,
                 &signature_hash_algo,
-                &certificate.as_ref().unwrap().private_key,
+                &certificate.private_key,
             ) {
                 Ok(cert) => cert,
                 Err(err) => {

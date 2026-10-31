@@ -366,7 +366,7 @@ fn verify_signature(
             let bits = modulus.first().map_or(0, |first| {
                 modulus.len() * 8 - first.leading_zeros() as usize
             });
-            if bits > 8192 || bits < 1024 || (!insecure_verification && bits < 2048) {
+            if !(1024..=8192).contains(&bits) || (!insecure_verification && bits < 2048) {
                 return Err(Error::ErrKeySignatureMismatch);
             }
             (

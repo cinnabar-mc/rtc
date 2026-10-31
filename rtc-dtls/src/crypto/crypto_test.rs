@@ -430,7 +430,7 @@ fn handshake_signature_checks_the_certificate_algorithm_and_curve() -> Result<()
         message,
         &algorithm,
         &signature,
-        &[raw.clone()],
+        std::slice::from_ref(&raw),
         false,
     )?;
     // Preserve the valid key bits and signature, changing only the SPKI declaration.
@@ -489,7 +489,7 @@ fn ed25519_signatures_require_the_ed25519_wire_scheme() -> Result<()> {
                 message,
                 &algorithm,
                 &signature,
-                &[raw.clone()],
+                std::slice::from_ref(&raw),
                 true
             )
             .is_ok(),
