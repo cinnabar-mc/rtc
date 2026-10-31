@@ -184,6 +184,15 @@ impl Flight for Flight3 {
             for extension in &h.extensions {
                 match extension {
                     Extension::UseSrtp(e) => {
+                        if !e.master_key_identifier.is_empty() {
+                            return Err((
+                                Some(Alert {
+                                    alert_level: AlertLevel::Fatal,
+                                    alert_description: AlertDescription::IllegalParameter,
+                                }),
+                                Some(Error::Other("server selected an unoffered SRTP MKI".into())),
+                            ));
+                        }
                         let profile = match find_matching_srtp_profile(
                             &e.protection_profiles,
                             &cfg.local_srtp_protection_profiles,
@@ -359,6 +368,7 @@ impl Flight for Flight3 {
 
         if !cfg.local_srtp_protection_profiles.is_empty() {
             extensions.push(Extension::UseSrtp(ExtensionUseSrtp {
+                master_key_identifier: vec![],
                 protection_profiles: cfg.local_srtp_protection_profiles.clone(),
             }));
         }

@@ -47,6 +47,7 @@ const EXTENSION_USE_SRTPHEADER_SIZE: usize = 6;
 #[allow(non_camel_case_types)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtensionUseSrtp {
+    pub(crate) master_key_identifier: Vec<u8>,
     pub(crate) protection_profiles: Vec<SrtpProtectionProfile>,
 }
 
@@ -58,7 +59,7 @@ impl ExtensionUseSrtp {
 
     /// The encoded size of this message in bytes.
     pub fn size(&self) -> usize {
-        2 + 2 + self.protection_profiles.len() * 2 + 1
+        2 + 2 + self.protection_profiles.len() * 2 + 1 + self.master_key_identifier.len()
     }
 
     /// Encodes this message to `writer`.
@@ -67,16 +68,17 @@ impl ExtensionUseSrtp {
     ///
     /// Fails on a write error, or if a field exceeds the length its wire format allows.
     pub fn marshal<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_u16::<BigEndian>(
-            2 + /* MKI Length */ 1 + 2 * self.protection_profiles.len() as u16,
-        )?;
+        let mki_len =
+            u8::try_from(self.master_key_identifier.len()).map_err(|_| Error::ErrLengthMismatch)?;
+        writer.write_u16::<BigEndian>((self.size() - 2) as u16)?;
         writer.write_u16::<BigEndian>(2 * self.protection_profiles.len() as u16)?;
         for v in &self.protection_profiles {
             writer.write_u16::<BigEndian>(*v as u16)?;
         }
 
         /* MKI Length */
-        writer.write_u8(0x00)?;
+        writer.write_u8(mki_len)?;
+        writer.write_all(&self.master_key_identifier)?;
 
         Ok(writer.flush()?)
     }
@@ -87,20 +89,31 @@ impl ExtensionUseSrtp {
     ///
     /// Fails if `reader` is truncated or its contents are not a valid encoding.
     pub fn unmarshal<R: Read>(reader: &mut R) -> Result<Self> {
-        let _ = reader.read_u16::<BigEndian>()?;
-
-        let profile_count = reader.read_u16::<BigEndian>()? as usize / 2;
-        let mut protection_profiles = vec![];
-        for _ in 0..profile_count {
-            let protection_profile = reader.read_u16::<BigEndian>()?.into();
-            protection_profiles.push(protection_profile);
+        let length = reader.read_u16::<BigEndian>()? as usize;
+        let mut payload = Vec::new();
+        reader.take(length as u64).read_to_end(&mut payload)?;
+        if payload.len() != length || length < 3 {
+            return Err(Error::ErrLengthMismatch);
         }
-
-        /* MKI Length */
-        let _ = reader.read_u8()?;
-
+        let mut remaining = payload.as_slice();
+        let profile_bytes = remaining.read_u16::<BigEndian>()? as usize;
+        if profile_bytes == 0
+            || !profile_bytes.is_multiple_of(2)
+            || profile_bytes >= remaining.len()
+        {
+            return Err(Error::ErrLengthMismatch);
+        }
+        let mut protection_profiles = Vec::new();
+        for _ in 0..profile_bytes / 2 {
+            protection_profiles.push(remaining.read_u16::<BigEndian>()?.into());
+        }
+        let mki_length = remaining.read_u8()? as usize;
+        if mki_length != remaining.len() {
+            return Err(Error::ErrLengthMismatch);
+        }
         Ok(ExtensionUseSrtp {
             protection_profiles,
+            master_key_identifier: remaining.to_vec(),
         })
     }
 }

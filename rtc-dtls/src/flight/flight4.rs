@@ -647,6 +647,7 @@ impl Flight for Flight4 {
 
         if state.srtp_protection_profile != SrtpProtectionProfile::Unsupported {
             extensions.push(Extension::UseSrtp(ExtensionUseSrtp {
+                master_key_identifier: vec![],
                 protection_profiles: vec![state.srtp_protection_profile],
             }));
         }

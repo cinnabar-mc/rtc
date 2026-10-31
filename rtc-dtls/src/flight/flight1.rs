@@ -145,6 +145,7 @@ impl Flight for Flight1 {
 
         if !cfg.local_srtp_protection_profiles.is_empty() {
             extensions.push(Extension::UseSrtp(ExtensionUseSrtp {
+                master_key_identifier: vec![],
                 protection_profiles: cfg.local_srtp_protection_profiles.clone(),
             }));
         }

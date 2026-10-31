@@ -3098,3 +3098,38 @@ fn plaintext_ccs_cannot_advance_an_established_cipher_epoch() {
         b"still authenticated"
     );
 }
+
+#[test]
+fn client_rejects_an_unoffered_server_srtp_mki() {
+    use crate::extension::extension_use_srtp::SrtpProtectionProfile;
+    let (mut client, mut server) = certificate_pair();
+    let profiles = vec![SrtpProtectionProfile::Srtp_Aead_Aes_128_Gcm];
+    Arc::get_mut(&mut client.handshake_config)
+        .unwrap()
+        .local_srtp_protection_profiles = profiles.clone();
+    Arc::get_mut(&mut server.handshake_config)
+        .unwrap()
+        .local_srtp_protection_profiles = profiles;
+    let now = Instant::now();
+    client.handshake(now).unwrap();
+    server.handshake(now).unwrap();
+    deliver_records(&mut client, &mut server, now).unwrap();
+    deliver_records(&mut server, &mut client, now).unwrap();
+    deliver_records(&mut client, &mut server, now).unwrap();
+    for packet in &mut server.outgoing_packets {
+        if let Content::Handshake(handshake) = &mut packet.record.content {
+            if let HandshakeMessage::ServerHello(hello) = &mut handshake.handshake_message {
+                for extension in &mut hello.extensions {
+                    if let crate::extension::Extension::UseSrtp(srtp) = extension {
+                        srtp.master_key_identifier = vec![0xaa];
+                    }
+                }
+                handshake.handshake_header.length = handshake.handshake_message.size() as u32;
+                handshake.handshake_header.fragment_length = handshake.handshake_header.length;
+                packet.record.record_layer_header.content_len = handshake.size() as u16;
+            }
+        }
+    }
+    assert!(deliver_records(&mut server, &mut client, now).is_err());
+    assert!(!client.is_handshake_completed());
+}
