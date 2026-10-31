@@ -172,7 +172,7 @@ impl Flight for Flight5 {
         cache: &HandshakeCache,
         cfg: &HandshakeConfig,
     ) -> Result<Vec<Packet>, (Option<Alert>, Option<Error>)> {
-        let certificate = if !cfg.local_certificates.is_empty() {
+        let mut certificate = if !cfg.local_certificates.is_empty() {
             let cert = match cfg.get_certificate(&cfg.server_name) {
                 Ok(cert) => cert,
                 Err(err) => {
@@ -189,6 +189,34 @@ impl Flight for Flight5 {
         } else {
             None
         };
+
+        let mut signature_schemes = cfg.local_signature_schemes.clone();
+        if state.remote_requested_certificate {
+            let raw = cache.pull_and_merge(&[HandshakeCachePullRule {
+                typ: HandshakeType::CertificateRequest,
+                epoch: cfg.initial_epoch,
+                is_client: false,
+                optional: false,
+            }]);
+            let request =
+                Handshake::unmarshal(&mut raw.as_slice()).map_err(|error| (None, Some(error)))?;
+            let HandshakeMessage::CertificateRequest(request) = request.handshake_message else {
+                return Err((None, Some(Error::ErrInvalidContentType)));
+            };
+            signature_schemes.retain(|scheme| request.signature_hash_algorithms.contains(scheme));
+            certificate = certificate.filter(|certificate| {
+                let typ = match certificate.private_key.signing_key.public_key().encoding {
+                    crypto::PublicKeyEncoding::RsaPkcs1Der => {
+                        crate::client_certificate_type::ClientCertificateType::RsaSign
+                    }
+                    _ => crate::client_certificate_type::ClientCertificateType::EcdsaSign,
+                };
+                request.certificate_types.contains(&typ)
+                    && signature_schemes
+                        .iter()
+                        .any(|scheme| scheme.is_compatible(&certificate.private_key))
+            });
+        }
 
         let mut pkts = vec![];
 
@@ -342,7 +370,7 @@ impl Flight for Flight5 {
         // If the client has sent a certificate with signing ability, a digitally-signed
         // CertificateVerify message is sent to explicitly verify possession of the
         // private key in the certificate.
-        if state.remote_requested_certificate && !cfg.local_certificates.is_empty() {
+        if state.remote_requested_certificate && certificate.is_some() {
             let mut plain_text = cache.pull_and_merge(&[
                 HandshakeCachePullRule {
                     typ: HandshakeType::ClientHello,
@@ -398,7 +426,7 @@ impl Flight for Flight5 {
 
             // Find compatible signature scheme
             let signature_hash_algo = match select_signature_scheme(
-                &cfg.local_signature_schemes,
+                &signature_schemes,
                 &certificate.as_ref().unwrap().private_key,
             ) {
                 Ok(s) => s,

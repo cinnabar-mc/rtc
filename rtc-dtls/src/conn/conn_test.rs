@@ -2883,6 +2883,63 @@ fn repeated_cookie_challenges_wait_for_the_existing_backoff() {
 }
 
 #[test]
+fn client_honors_requested_certificate_types_and_signature_schemes() {
+    use crate::client_certificate_type::ClientCertificateType;
+    use crate::config::ClientAuthType;
+    use crate::signature_hash_algorithm::{
+        HashAlgorithm, SignatureAlgorithm, SignatureHashAlgorithm,
+    };
+    for incompatible_type in [true, false] {
+        let (mut client, mut server) = certificate_pair();
+        Arc::get_mut(&mut server.handshake_config)
+            .unwrap()
+            .client_auth = ClientAuthType::RequestClientCert;
+        let now = Instant::now();
+        client.handshake(now).unwrap();
+        server.handshake(now).unwrap();
+        deliver_records(&mut client, &mut server, now).unwrap();
+        deliver_records(&mut server, &mut client, now).unwrap();
+        deliver_records(&mut client, &mut server, now).unwrap();
+        for packet in &mut server.outgoing_packets {
+            if let Content::Handshake(handshake) = &mut packet.record.content {
+                if let HandshakeMessage::CertificateRequest(request) =
+                    &mut handshake.handshake_message
+                {
+                    if incompatible_type {
+                        request.certificate_types = vec![ClientCertificateType::RsaSign];
+                    } else {
+                        request.signature_hash_algorithms = vec![SignatureHashAlgorithm {
+                            hash: HashAlgorithm::Sha384,
+                            signature: SignatureAlgorithm::Ecdsa,
+                        }];
+                    }
+                    handshake.handshake_header.length = handshake.handshake_message.size() as u32;
+                    handshake.handshake_header.fragment_length = handshake.handshake_header.length;
+                    packet.record.record_layer_header.content_len = handshake.size() as u16;
+                }
+            }
+        }
+        for _ in 0..6 {
+            deliver_records(&mut server, &mut client, now).unwrap();
+            deliver_records(&mut client, &mut server, now).unwrap();
+        }
+        assert!(
+            client.is_handshake_completed() && server.is_handshake_completed(),
+            "type={incompatible_type}, client={:?}/{}, server={:?}/{}, queued={}",
+            client.current_flight,
+            client.current_handshake_state,
+            server.current_flight,
+            server.current_handshake_state,
+            server.incoming_encrypted_packets.len()
+        );
+        assert!(
+            server.state.peer_certificates.is_empty(),
+            "no permitted client certificate"
+        );
+    }
+}
+
+#[test]
 fn repeated_initial_hello_recovers_a_lost_cookie_response_with_backoff() {
     let (mut client, mut server) = certificate_pair();
     let start = Instant::now();
