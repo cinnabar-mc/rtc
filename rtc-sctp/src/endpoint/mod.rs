@@ -171,8 +171,15 @@ impl Endpoint {
                 .map(|(index, _)| AssociationHandle(index))
         });
 
-        let known_ch =
-            known_ch.filter(|handle| self.associations[handle.0].initial_remote == remote);
+        // Restart challenges belong to the original carrier. Established traffic
+        // keeps tag-based routing so an authenticated outer transport can change its route.
+        let known_ch = if partial_decode.first_chunk_type == CT_INIT
+            || partial_decode.first_chunk_type == CT_COOKIE_ECHO
+        {
+            known_ch.filter(|handle| self.associations[handle.0].initial_remote == remote)
+        } else {
+            known_ch
+        };
         if let Some(ch) = known_ch {
             return Some((
                 ch,

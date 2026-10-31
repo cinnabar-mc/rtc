@@ -4000,7 +4000,7 @@ fn benchmark_association_roundtrip() -> Result<()> {
 }
 
 #[test]
-fn existing_association_tags_do_not_route_packets_from_another_transport_peer() -> Result<()> {
+fn restart_cookies_do_not_route_from_another_transport_peer() -> Result<()> {
     let (mut pair, _, _) = create_association_pair(AckMode::NoDelay, 0)?;
     let tag = *pair.server.endpoint.association_ids.keys().next().unwrap();
     let packet = Packet {
