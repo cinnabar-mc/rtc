@@ -2828,3 +2828,75 @@ fn unsupported_epochs_are_discarded_without_retaining_packets() {
     conn.read(&record).unwrap();
     assert_eq!(conn.incoming_encrypted_packets.len(), 1);
 }
+
+/// Encodes a fresh cookie challenge without changing any connection state.
+fn cookie_challenge(cookie: u8, sequence: u16) -> Vec<u8> {
+    use crate::handshake::handshake_message_hello_verify_request::HandshakeMessageHelloVerifyRequest;
+    let mut handshake = Handshake::new(HandshakeMessage::HelloVerifyRequest(
+        HandshakeMessageHelloVerifyRequest {
+            version: PROTOCOL_VERSION1_2,
+            cookie: vec![cookie; 20],
+        },
+    ));
+    handshake.handshake_header.message_sequence = sequence;
+    let mut record = RecordLayer::new(PROTOCOL_VERSION1_2, 0, Content::Handshake(handshake));
+    record.record_layer_header.sequence_number = u64::from(sequence);
+    let mut raw = Vec::new();
+    record.marshal(&mut raw).unwrap();
+    raw
+}
+
+#[test]
+fn repeated_cookie_challenges_wait_for_the_existing_backoff() {
+    let (mut client, _) = certificate_pair();
+    let start = Instant::now();
+    let interval = client.handshake_config.retransmit_interval;
+    client.handshake(start).unwrap();
+    assert!(client.outgoing_raw_packet().is_some());
+    client.read(&cookie_challenge(1, 0)).unwrap();
+    client.handshake(start).unwrap();
+    assert!(
+        client.outgoing_raw_packet().is_some(),
+        "first cookie response is immediate"
+    );
+    let deadline = client.current_retransmit_timer.unwrap();
+    assert_eq!(deadline, start + interval);
+    for sequence in 1..4 {
+        client
+            .read(&cookie_challenge(sequence as u8 + 1, sequence))
+            .unwrap();
+        client
+            .handshake(start + Duration::from_millis(u64::from(sequence)))
+            .unwrap();
+        assert!(
+            client.outgoing_raw_packet().is_none(),
+            "a new cookie must not bypass the timer"
+        );
+        assert_eq!(client.current_retransmit_timer, Some(deadline));
+    }
+    client.handshake_timeout(deadline).unwrap();
+    assert!(client.outgoing_raw_packet().is_some());
+    assert_eq!(
+        client.current_retransmit_timer,
+        Some(deadline + interval * 2)
+    );
+}
+
+#[test]
+fn repeated_initial_hello_recovers_a_lost_cookie_response_with_backoff() {
+    let (mut client, mut server) = certificate_pair();
+    let start = Instant::now();
+    client.handshake(start).unwrap();
+    server.handshake(start).unwrap();
+    deliver_records(&mut client, &mut server, start).unwrap();
+    assert!(server.outgoing_raw_packet().is_some()); // Lose the first challenge.
+    let deadline = client.current_retransmit_timer.unwrap();
+    client.handshake_timeout(deadline).unwrap();
+    deliver_records(&mut client, &mut server, deadline).unwrap();
+    server.handshake_timeout(deadline).unwrap();
+    assert!(
+        server.outgoing_raw_packet().is_some(),
+        "a repeated ClientHello recovers the challenge"
+    );
+    assert!(!server.is_handshake_completed());
+}

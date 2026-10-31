@@ -104,6 +104,7 @@ pub struct DTLSConn {
     pub(crate) flights: Option<Vec<Packet>>,
     pub(crate) handshake_config: Arc<HandshakeConfig>,
     pub(crate) retransmit: bool,
+    pub(crate) cookie_retry_pending: bool,
     pub(crate) handshake_rx: Option<()>,
     /// Whether the datagram most recently passed to [`Self::read`] carried an accepted handshake
     /// record. After completion, only an authenticated repeat of the peer's Finished is accepted.
@@ -174,6 +175,7 @@ impl DTLSConn {
             flights: None,
             handshake_config,
             retransmit: false,
+            cookie_retry_pending: false,
             handshake_rx: None,
             received_handshake_in_last_datagram: false,
         }
@@ -729,6 +731,19 @@ impl DTLSConn {
                 self.replay_detector[h.epoch as usize].accept();
             }
             return (repeats_finished, None, None);
+        }
+
+        if !self.is_client
+            && h.epoch == 0
+            && h.content_type == ContentType::Handshake
+            && self.current_flight.to_string() == "Flight 2"
+            && self
+                .cache
+                .matches_received_client_hello(&pkt[RECORD_LAYER_HEADER_SIZE..], h.epoch)
+        {
+            self.replay_detector[0].accept();
+            self.cookie_retry_pending = true;
+            return (false, None, None);
         }
 
         let is_handshake = match self.fragment_buffer.push(&pkt) {

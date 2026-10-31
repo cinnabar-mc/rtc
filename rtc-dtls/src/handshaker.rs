@@ -122,7 +122,10 @@ impl DTLSConn {
         self.flights = None;
 
         // Prepare flights
-        self.current_retransmit_count = 0;
+        if !self.cookie_retry_pending {
+            self.current_retransmit_count = 0;
+        }
+        self.cookie_retry_pending = false;
         self.retransmit = self.current_flight.has_retransmit();
 
         let result =
@@ -181,7 +184,12 @@ impl DTLSConn {
         if self.current_flight.is_last_send_flight() || self.is_handshake_completed() {
             Ok(HandshakeState::Finished)
         } else {
-            self.current_retransmit_timer = Some(now + self.handshake_config.retransmit_interval);
+            let interval = self
+                .handshake_config
+                .retransmit_interval
+                .saturating_mul(1 << self.current_retransmit_count.min(6))
+                .min(std::time::Duration::from_secs(60));
+            self.current_retransmit_timer = Some(now + interval);
             Ok(HandshakeState::Waiting)
         }
     }
@@ -192,7 +200,6 @@ impl DTLSConn {
                 srv_cli_str(self.state.is_client),
                 self.current_flight
             );
-            self.current_retransmit_timer = None;
             let result = self.current_flight.parse(
                 /*&mut self.handle_queue_tx,*/ &mut self.state,
                 &self.cache,
@@ -216,6 +223,13 @@ impl DTLSConn {
                     }
                 }
                 Ok(next_flight) => {
+                    if self.current_flight.to_string() == "Flight 3"
+                        && next_flight.to_string() == "Flight 3"
+                    {
+                        self.cookie_retry_pending = true;
+                        return Ok(HandshakeState::Waiting);
+                    }
+                    self.current_retransmit_timer = None;
                     debug!(
                         "[handshake:{}] {} -> {}",
                         srv_cli_str(self.state.is_client),
@@ -275,7 +289,7 @@ impl DTLSConn {
                 self.current_retransmit_count,
                 self.maximum_retransmit_number,
             );
-            if self.retransmit {
+            if self.retransmit || self.cookie_retry_pending {
                 self.current_retransmit_count += 1;
                 if self.current_retransmit_count > self.maximum_retransmit_number {
                     warn!(
@@ -287,7 +301,11 @@ impl DTLSConn {
                     );
                     Some(HandshakeState::Errored)
                 } else {
-                    Some(HandshakeState::Sending)
+                    Some(if self.cookie_retry_pending {
+                        HandshakeState::Preparing
+                    } else {
+                        HandshakeState::Sending
+                    })
                 }
             } else {
                 self.current_retransmit_timer =

@@ -83,9 +83,25 @@ impl HandshakeCache {
     // ending fragment triggers a reply, so fragmentation does not spend a retry per fragment.
     pub(crate) fn matches_received_finished(
         &self,
+        data: &[u8],
+        epoch: u16,
+        is_client: bool,
+    ) -> bool {
+        self.matches_received_handshake(data, epoch, is_client, HandshakeType::Finished)
+    }
+
+    /// Recognizes only an exact retry of the cached initial ClientHello.
+    pub(crate) fn matches_received_client_hello(&self, data: &[u8], epoch: u16) -> bool {
+        self.matches_received_handshake(data, epoch, true, HandshakeType::ClientHello)
+    }
+
+    /// Matches a complete message or its final fragment without storing retransmitted bytes.
+    fn matches_received_handshake(
+        &self,
         mut data: &[u8],
         epoch: u16,
         is_client: bool,
+        typ: HandshakeType,
     ) -> bool {
         while !data.is_empty() {
             let mut reader = data;
@@ -98,11 +114,11 @@ impl HandshakeCache {
             };
             let fragment_start = header.fragment_offset as usize;
             let fragment_end = fragment_start + fragment_length;
-            if header.handshake_type == HandshakeType::Finished
+            if header.handshake_type == typ
                 && fragment_length > 0
                 && fragment_end == header.length as usize
                 && self.cache.iter().any(|item| {
-                    item.typ == HandshakeType::Finished
+                    item.typ == typ
                         && item.epoch == epoch
                         && item.is_client == is_client
                         && item.message_sequence == header.message_sequence

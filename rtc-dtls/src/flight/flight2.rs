@@ -45,7 +45,7 @@ impl Flight for Flight2 {
 
             // Client may retransmit the first ClientHello when HelloVerifyRequest is dropped.
             // Parse as flight 0 in this case.
-            Err(_) => return Flight0 {}.parse(/*tx,*/ state, cache, cfg),
+            Err(_) => return Err((None, None)),
         };
 
         if let Some(message) = msgs.get(&HandshakeType::ClientHello) {
@@ -222,4 +222,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unrelated_handshake_input_does_not_retransmit_a_cookie_challenge() {
+        let provider = crypto::default_provider().unwrap();
+        let mut cfg = HandshakeConfig::new(provider.clone());
+        cfg.local_named_curves = vec![NamedCurve::X25519];
+        cfg.local_cipher_suites = vec![CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256];
+        let mut state = State::new(provider, false);
+        let mut cache = HandshakeCache::new();
+        cache_hello(&mut cache, hello(NamedCurve::X25519, false), 0);
+        Flight0.parse(&mut state, &cache, &cfg).unwrap();
+        assert!(matches!(
+            Flight2.parse(&mut state, &cache, &cfg),
+            Err((None, None))
+        ));
+    }
 }
