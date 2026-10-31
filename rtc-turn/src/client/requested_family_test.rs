@@ -140,6 +140,26 @@ fn test_requested_family_is_retained_by_actual_allocation_transactions() -> Resu
             },
             50001,
         );
+        for integrity_key in [None, Some(vec![0; 16])] {
+            let mut invalid = Message::new();
+            invalid.build(&[
+                Box::new(receipt),
+                Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_SUCCESS_RESPONSE)),
+                Box::new(RelayedAddress {
+                    ip: relay.ip(),
+                    port: relay.port(),
+                }),
+                Box::new(Lifetime(Duration::from_secs(600))),
+            ])?;
+            if let Some(integrity_key) = integrity_key {
+                MessageIntegrity::new_raw_integrity_with_provider(integrity_key, provider.crypto())
+                    .add_to(&mut invalid)?;
+            }
+            assert!(deliver(&mut client, now, invalid).is_err());
+            assert!(client.has_transaction(&receipt));
+            assert!(client.poll_event().is_none());
+            assert!(client.relay(relay).is_err());
+        }
         let mut response = Message::new();
         response.build(&[
             Box::new(receipt),

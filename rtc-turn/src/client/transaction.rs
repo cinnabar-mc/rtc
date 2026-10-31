@@ -22,8 +22,21 @@ pub(crate) enum TransactionType {
     AllocateAttempt,
     AllocateRequest(TextAttribute),
     CreatePermissionRequest(RelayedAddr, Option<SocketAddr>),
-    RefreshRequest(RelayedAddr),
+    RefreshRequest(RelayedAddr, Duration),
     ChannelBindRequest(RelayedAddr, SocketAddr),
+}
+
+impl TransactionType {
+    /// Returns the response method that can complete this request.
+    pub(crate) fn method(&self) -> Method {
+        match self {
+            Self::BindingRequest => METHOD_BINDING,
+            Self::AllocateAttempt | Self::AllocateRequest(_) => METHOD_ALLOCATE,
+            Self::CreatePermissionRequest(..) => METHOD_CREATE_PERMISSION,
+            Self::RefreshRequest(..) => METHOD_REFRESH,
+            Self::ChannelBindRequest(..) => METHOD_CHANNEL_BIND,
+        }
+    }
 }
 
 // TransactionConfig is a set of config params used by NewTransaction
@@ -171,7 +184,8 @@ impl TransactionMap {
         eto
     }
 
-    pub(crate) fn handle_timeout(&mut self, now: Instant) {
+    /// Removes exhausted transactions and returns their request intent for lifecycle cleanup.
+    pub(crate) fn handle_timeout(&mut self, now: Instant) -> Vec<TransactionType> {
         let mut keys = vec![];
         for (key, tr) in self.tr_map.iter_mut() {
             tr.handle_timeout(now);
@@ -180,10 +194,14 @@ impl TransactionMap {
             }
         }
 
+        let mut expired = Vec::with_capacity(keys.len());
         for key in keys {
-            self.tr_map.remove(&key);
+            if let Some(transaction) = self.tr_map.remove(&key) {
+                expired.push(transaction.transaction_type);
+            }
             self.events.push_back(Event::TransactionTimeout(key));
         }
+        expired
     }
 
     pub(crate) fn poll_transmit(&mut self) -> Option<TransportMessage<BytesMut>> {
@@ -222,6 +240,8 @@ impl TransactionMap {
     // close_and_delete_all closes and deletes all transactions
     pub(crate) fn delete_all(&mut self) {
         self.tr_map.clear();
+        self.transmits.clear();
+        self.events.clear();
     }
 
     // Size returns the length of the transaction map

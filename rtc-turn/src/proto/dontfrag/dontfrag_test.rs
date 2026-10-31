@@ -21,7 +21,7 @@ fn test_dont_fragment_add_to() -> Result<()> {
 
     let mut decoded = Message::new();
     decoded.write(&m.raw)?;
-    assert!(dont_fragment.get_from(&m).is_ok(), "should be set");
+    assert!(dont_fragment.get_from(&decoded).is_ok(), "should be set");
 
     Ok(())
 }
