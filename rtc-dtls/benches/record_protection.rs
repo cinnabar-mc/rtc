@@ -71,14 +71,15 @@ fn record() -> (RecordLayerHeader, Vec<u8>) {
 
 /// The built-in providers compiled into this benchmark.
 fn providers() -> Vec<(&'static str, Arc<dyn RTCCryptoProvider>)> {
-    let mut providers: Vec<(&'static str, Arc<dyn RTCCryptoProvider>)> = Vec::new();
-    #[cfg(feature = "crypto-ring")]
-    providers.push(("ring", Arc::new(crypto::providers::RingProvider::default())));
-    #[cfg(feature = "crypto-aws-lc-rs")]
-    providers.push((
-        "aws-lc-rs",
-        Arc::new(crypto::providers::AwsLcRsProvider::default()),
-    ));
+    let providers: Vec<(&'static str, Arc<dyn RTCCryptoProvider>)> = vec![
+        #[cfg(feature = "crypto-ring")]
+        ("ring", Arc::new(crypto::providers::RingProvider::default())),
+        #[cfg(feature = "crypto-aws-lc-rs")]
+        (
+            "aws-lc-rs",
+            Arc::new(crypto::providers::AwsLcRsProvider::default()),
+        ),
+    ];
     assert!(
         !providers.is_empty(),
         "enable `ring` or `aws-lc-rs` to run these benchmarks"

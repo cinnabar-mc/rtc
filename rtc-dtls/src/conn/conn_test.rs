@@ -2901,22 +2901,21 @@ fn client_honors_requested_certificate_types_and_signature_schemes() {
         deliver_records(&mut server, &mut client, now).unwrap();
         deliver_records(&mut client, &mut server, now).unwrap();
         for packet in &mut server.outgoing_packets {
-            if let Content::Handshake(handshake) = &mut packet.record.content {
-                if let HandshakeMessage::CertificateRequest(request) =
+            if let Content::Handshake(handshake) = &mut packet.record.content
+                && let HandshakeMessage::CertificateRequest(request) =
                     &mut handshake.handshake_message
-                {
-                    if incompatible_type {
-                        request.certificate_types = vec![ClientCertificateType::RsaSign];
-                    } else {
-                        request.signature_hash_algorithms = vec![SignatureHashAlgorithm {
-                            hash: HashAlgorithm::Sha384,
-                            signature: SignatureAlgorithm::Ecdsa,
-                        }];
-                    }
-                    handshake.handshake_header.length = handshake.handshake_message.size() as u32;
-                    handshake.handshake_header.fragment_length = handshake.handshake_header.length;
-                    packet.record.record_layer_header.content_len = handshake.size() as u16;
+            {
+                if incompatible_type {
+                    request.certificate_types = vec![ClientCertificateType::RsaSign];
+                } else {
+                    request.signature_hash_algorithms = vec![SignatureHashAlgorithm {
+                        hash: HashAlgorithm::Sha384,
+                        signature: SignatureAlgorithm::Ecdsa,
+                    }];
                 }
+                handshake.handshake_header.length = handshake.handshake_message.size() as u32;
+                handshake.handshake_header.fragment_length = handshake.handshake_header.length;
+                packet.record.record_layer_header.content_len = handshake.size() as u16;
             }
         }
         for _ in 0..6 {
@@ -3117,17 +3116,17 @@ fn client_rejects_an_unoffered_server_srtp_mki() {
     deliver_records(&mut server, &mut client, now).unwrap();
     deliver_records(&mut client, &mut server, now).unwrap();
     for packet in &mut server.outgoing_packets {
-        if let Content::Handshake(handshake) = &mut packet.record.content {
-            if let HandshakeMessage::ServerHello(hello) = &mut handshake.handshake_message {
-                for extension in &mut hello.extensions {
-                    if let crate::extension::Extension::UseSrtp(srtp) = extension {
-                        srtp.master_key_identifier = vec![0xaa];
-                    }
+        if let Content::Handshake(handshake) = &mut packet.record.content
+            && let HandshakeMessage::ServerHello(hello) = &mut handshake.handshake_message
+        {
+            for extension in &mut hello.extensions {
+                if let crate::extension::Extension::UseSrtp(srtp) = extension {
+                    srtp.master_key_identifier = vec![0xaa];
                 }
-                handshake.handshake_header.length = handshake.handshake_message.size() as u32;
-                handshake.handshake_header.fragment_length = handshake.handshake_header.length;
-                packet.record.record_layer_header.content_len = handshake.size() as u16;
             }
+            handshake.handshake_header.length = handshake.handshake_message.size() as u32;
+            handshake.handshake_header.fragment_length = handshake.handshake_header.length;
+            packet.record.record_layer_header.content_len = handshake.size() as u16;
         }
     }
     assert!(deliver_records(&mut server, &mut client, now).is_err());
