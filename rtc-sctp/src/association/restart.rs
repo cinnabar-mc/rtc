@@ -59,16 +59,13 @@ impl Association {
             initiate_tag: candidate.local_tag,
             initial_tsn: candidate.local_tsn,
             num_inbound_streams: self
-                .transport_config
-                .max_num_inbound_streams()
+                .my_max_num_inbound_streams
                 .min(init.num_outbound_streams),
             num_outbound_streams: self
-                .transport_config
-                .max_num_outbound_streams()
+                .my_max_num_outbound_streams
                 .min(init.num_inbound_streams),
             advertised_receiver_window_credit: self.max_receive_buffer_size,
             params: vec![Box::new(candidate.cookie.clone())],
-            ..Default::default()
         };
         ack.set_supported_extensions();
         self.pending_restart = Some(Box::new(candidate));
@@ -133,6 +130,12 @@ impl Association {
         replacement.cumulative_tsn_ack_point = candidate.local_tsn.wrapping_sub(1);
         replacement.advanced_peer_tsn_ack_point = candidate.local_tsn.wrapping_sub(1);
         replacement.handle_init(packet, &candidate.peer_init)?;
+        replacement.my_max_num_inbound_streams = self
+            .my_max_num_inbound_streams
+            .min(candidate.peer_init.num_outbound_streams);
+        replacement.my_max_num_outbound_streams = self
+            .my_max_num_outbound_streams
+            .min(candidate.peer_init.num_inbound_streams);
         replacement.my_cookie = Some(candidate.cookie);
         replacement.set_state(AssociationState::Established);
         replacement.handshake_completed = true;
@@ -193,6 +196,8 @@ mod tests {
         association.set_state(AssociationState::Established);
         association.handshake_completed = true;
         association.peer_verification_tag = 20;
+        association.my_max_num_inbound_streams = 10;
+        association.my_max_num_outbound_streams = 10;
         association.source_port = 5000;
         association.destination_port = 5000;
         let packet = Packet {

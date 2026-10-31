@@ -3998,3 +3998,28 @@ fn benchmark_association_roundtrip() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn existing_association_tags_do_not_route_packets_from_another_transport_peer() -> Result<()> {
+    let (mut pair, _, _) = create_association_pair(AckMode::NoDelay, 0)?;
+    let tag = *pair.server.endpoint.association_ids.keys().next().unwrap();
+    let packet = Packet {
+        common_header: CommonHeader {
+            source_port: 5000,
+            destination_port: 5000,
+            verification_tag: tag,
+        },
+        chunks: vec![Box::new(ChunkCookieEcho {
+            cookie: Bytes::from_static(b"wrong peer"),
+        })],
+    }
+    .marshal()?;
+    let other = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 1);
+    assert!(
+        pair.server
+            .endpoint
+            .handle(pair.time, other, None, packet)
+            .is_none()
+    );
+    Ok(())
+}

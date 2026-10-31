@@ -171,6 +171,8 @@ impl Endpoint {
                 .map(|(index, _)| AssociationHandle(index))
         });
 
+        let known_ch =
+            known_ch.filter(|handle| self.associations[handle.0].initial_remote == remote);
         if let Some(ch) = known_ch {
             return Some((
                 ch,
