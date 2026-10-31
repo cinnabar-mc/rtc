@@ -1425,6 +1425,7 @@ impl Agent {
                 let (ip, port) = (remote_addr.ip(), remote_addr.port());
 
                 let prflx_candidate_config = CandidatePeerReflexiveConfig {
+                    tcp_type: Default::default(),
                     base_config: CandidateConfig {
                         network: network_type.to_string(),
                         address: ip.to_string(),

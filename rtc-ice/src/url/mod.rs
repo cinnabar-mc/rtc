@@ -115,7 +115,7 @@ pub struct Url {
 
 impl fmt::Display for Url {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let host = if self.host.contains("::") {
+        let host = if self.host.contains(':') {
             "[".to_owned() + self.host.as_str() + "]"
         } else {
             self.host.clone()
@@ -262,5 +262,27 @@ impl Url {
     #[must_use]
     pub fn is_secure(&self) -> bool {
         self.scheme == SchemeType::Stuns || self.scheme == SchemeType::Turns
+    }
+}
+
+#[cfg(test)]
+mod ipv6_regressions {
+    use super::*;
+    #[test]
+    fn ipv6_urls_keep_brackets_without_compressed_zeroes() -> Result<()> {
+        for scheme in ["stun", "stuns", "turn", "turns"] {
+            for host in ["2001:db8:1:2:3:4:5:6", "2001:db8::1"] {
+                let suffix = if scheme.starts_with("turn") {
+                    "?transport=udp"
+                } else {
+                    ""
+                };
+                let raw = format!("{scheme}:[{host}]:3478{suffix}");
+                let url = Url::parse_url(&raw)?;
+                assert_eq!(url.to_string(), raw);
+                assert_eq!(Url::parse_url(&url.to_string())?.host, url.host);
+            }
+        }
+        Ok(())
     }
 }

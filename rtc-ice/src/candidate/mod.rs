@@ -330,9 +330,10 @@ impl Candidate {
         // candidates for a particular component for a particular data stream
         // that have the same type, the local preference MUST be unique for each
         // one.
+        // Preserve the accepted u16 component range with Pion-compatible arithmetic.
         (1 << 24) * u32::from(self.candidate_type().preference())
             + (1 << 8) * u32::from(self.local_preference())
-            + (256 - u32::from(self.component()))
+            + u32::from(256u16.wrapping_sub(self.component()))
     }
 
     /// Uses the peer-reflexive type preference for a check, preserving local and component bits.
@@ -430,7 +431,8 @@ impl Candidate {
 
     /// Used to compare two candidateBases.
     pub fn equal(&self, other: &Candidate) -> bool {
-        self.network_type() == other.network_type()
+        self.component() == other.component()
+            && self.network_type() == other.network_type()
             && self.candidate_type() == other.candidate_type()
             && self.address() == other.address()
             && self.port() == other.port()
@@ -445,7 +447,7 @@ impl Candidate {
     /// and have compatible TCP types (RFC 6544). UDP candidates use
     /// `TcpType::Unspecified`.
     pub(crate) fn can_pair_with(&self, other: &Candidate) -> bool {
-        if self.network_type() != other.network_type() {
+        if self.component() != other.component() || self.network_type() != other.network_type() {
             return false;
         }
 
@@ -575,107 +577,75 @@ pub fn unmarshal_candidate(raw: &str) -> Result<Candidate> {
     // Port
     let port: u16 = split[5].parse()?;
 
+    if split[6] != "typ" {
+        return Err(Error::ErrParseType);
+    }
     let typ = split[7];
-
     let mut rel_addr = String::new();
     let mut rel_port = 0;
     let mut tcp_type = TcpType::Unspecified;
-
-    if split.len() > 8 {
-        let split2 = &split[8..];
-
-        if split2[0] == "raddr" {
-            if split2.len() < 4 {
-                return Err(Error::Other(format!(
-                    "{:?}: incorrect length",
-                    Error::ErrParseRelatedAddr
-                )));
+    let mut index = 8;
+    while index < split.len() {
+        match split[index] {
+            "raddr" => {
+                if index + 3 >= split.len() || split[index + 2] != "rport" {
+                    return Err(Error::ErrParseRelatedAddr);
+                }
+                rel_addr = split[index + 1].to_owned();
+                rel_port = split[index + 3].parse()?;
+                index += 4;
             }
-
-            // RelatedAddress
-            split2[1].clone_into(&mut rel_addr);
-
-            // RelatedPort
-            rel_port = split2[3].parse()?;
-        } else if split2[0] == "tcptype" {
-            if split2.len() < 2 {
-                return Err(Error::Other(format!(
-                    "{:?}: incorrect length",
-                    Error::ErrParseType
-                )));
+            "tcptype" => {
+                let value = split.get(index + 1).ok_or(Error::ErrParseType)?;
+                tcp_type = TcpType::from(*value);
+                if tcp_type == TcpType::Unspecified {
+                    return Err(Error::ErrParseType);
+                }
+                index += 2;
             }
-
-            tcp_type = TcpType::from(split2[1]);
+            _ => {
+                index += 2;
+            }
         }
     }
-
+    let base_config = CandidateConfig {
+        network,
+        address,
+        port,
+        component,
+        priority,
+        foundation,
+        ..Default::default()
+    };
     match typ {
-        "host" => {
-            let config = CandidateHostConfig {
-                base_config: CandidateConfig {
-                    network,
-                    address,
-                    port,
-                    component,
-                    priority,
-                    foundation,
-                    ..CandidateConfig::default()
-                },
-                tcp_type,
-            };
-            config.new_candidate_host()
+        "host" => CandidateHostConfig {
+            base_config,
+            tcp_type,
         }
-        "srflx" => {
-            let config = CandidateServerReflexiveConfig {
-                base_config: CandidateConfig {
-                    network,
-                    address,
-                    port,
-                    component,
-                    priority,
-                    foundation,
-                    ..CandidateConfig::default()
-                },
-                rel_addr,
-                rel_port,
-                url: None,
-            };
-            config.new_candidate_server_reflexive()
+        .new_candidate_host(),
+        "srflx" => CandidateServerReflexiveConfig {
+            base_config,
+            rel_addr,
+            rel_port,
+            tcp_type,
+            url: None,
         }
-        "prflx" => {
-            let config = CandidatePeerReflexiveConfig {
-                base_config: CandidateConfig {
-                    network,
-                    address,
-                    port,
-                    component,
-                    priority,
-                    foundation,
-                    ..CandidateConfig::default()
-                },
-                rel_addr,
-                rel_port,
-            };
-
-            config.new_candidate_peer_reflexive()
+        .new_candidate_server_reflexive(),
+        "prflx" => CandidatePeerReflexiveConfig {
+            base_config,
+            rel_addr,
+            rel_port,
+            tcp_type,
         }
-        "relay" => {
-            let config = CandidateRelayConfig {
-                base_config: CandidateConfig {
-                    network,
-                    address,
-                    port,
-                    component,
-                    priority,
-                    foundation,
-                    ..CandidateConfig::default()
-                },
-                rel_addr,
-                rel_port,
-                url: None,
-            };
-            config.new_candidate_relay()
+        .new_candidate_peer_reflexive(),
+        "relay" => CandidateRelayConfig {
+            base_config,
+            rel_addr,
+            rel_port,
+            tcp_type,
+            url: None,
         }
+        .new_candidate_relay(),
         _ => Err(Error::Other(format!(
             "{:?} ({})",
             Error::ErrUnknownCandidateType,

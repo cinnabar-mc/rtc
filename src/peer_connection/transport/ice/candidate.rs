@@ -179,6 +179,7 @@ impl RTCIceCandidate {
             }
             RTCIceCandidateType::Srflx => {
                 let config = CandidateServerReflexiveConfig {
+                    tcp_type: self.tcp_type.to_ice(),
                     base_config,
                     rel_addr: self.related_address.clone(),
                     rel_port: self.related_port,
@@ -188,6 +189,7 @@ impl RTCIceCandidate {
             }
             RTCIceCandidateType::Prflx => {
                 let config = CandidatePeerReflexiveConfig {
+                    tcp_type: self.tcp_type.to_ice(),
                     base_config,
                     rel_addr: self.related_address.clone(),
                     rel_port: self.related_port,
@@ -196,6 +198,7 @@ impl RTCIceCandidate {
             }
             RTCIceCandidateType::Relay => {
                 let config = CandidateRelayConfig {
+                    tcp_type: self.tcp_type.to_ice(),
                     base_config,
                     rel_addr: self.related_address.clone(),
                     rel_port: self.related_port,

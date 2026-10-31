@@ -315,6 +315,7 @@ fn test_candidate_marshal() -> Result<()> {
     let tests = vec![
         (
             Some(Candidate {
+                component: 1,
                 network_type: NetworkType::Udp6,
                 candidate_type: CandidateType::Host,
                 address: "fcd9:e3b8:12ce:9fc5:74a5:c6bb:d8b:e08a".to_owned(),
@@ -327,6 +328,7 @@ fn test_candidate_marshal() -> Result<()> {
         ),
         (
             Some(Candidate {
+                component: 1,
                 network_type: NetworkType::Udp4,
                 candidate_type: CandidateType::Host,
                 address: "10.0.75.1".to_owned(),
@@ -337,6 +339,7 @@ fn test_candidate_marshal() -> Result<()> {
         ),
         (
             Some(Candidate {
+                component: 1,
                 network_type: NetworkType::Udp4,
                 candidate_type: CandidateType::ServerReflexive,
                 address: "191.228.238.68".to_owned(),
@@ -351,6 +354,7 @@ fn test_candidate_marshal() -> Result<()> {
         ),
         (
             Some(Candidate {
+                component: 1,
                 network_type: NetworkType::Udp4,
                 candidate_type: CandidateType::Relay,
                 address: "50.0.0.1".to_owned(),
@@ -365,6 +369,7 @@ fn test_candidate_marshal() -> Result<()> {
         ),
         (
             Some(Candidate {
+                component: 1,
                 network_type: NetworkType::Tcp4,
                 candidate_type: CandidateType::Host,
                 address: "192.168.0.196".to_owned(),
@@ -536,5 +541,58 @@ fn test_candidate_base_addr() -> Result<()> {
         "relay base is the relayed address itself"
     );
 
+    Ok(())
+}
+
+#[test]
+fn candidate_components_do_not_overflow_priority_or_cross_pair() -> Result<()> {
+    for component in [0, 1, 256, 257, u16::MAX] {
+        let mut c = unmarshal_candidate(&format!("f {component} udp 0 192.0.2.1 5000 typ host"))?;
+        let expected = (126u32 << 24) + (65535u32 << 8) + u32::from(256u16.wrapping_sub(component));
+        assert_eq!(c.priority(), expected);
+        c.set_component(component);
+        assert_eq!(c.priority(), expected);
+        assert!(!c.marshal().is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn different_components_are_distinct_and_cannot_pair() -> Result<()> {
+    let a = unmarshal_candidate("f 1 udp 123 192.0.2.1 5000 typ host")?;
+    let b = unmarshal_candidate("f 2 udp 123 192.0.2.1 5000 typ host")?;
+    assert!(!a.equal(&b));
+    assert!(!a.can_pair_with(&b));
+    Ok(())
+}
+
+#[test]
+fn candidate_parser_rejects_missing_markers_and_reads_all_extensions() -> Result<()> {
+    for raw in [
+        "f 1 udp 123 192.0.2.1 5000 bogus host",
+        "f 1 udp 123 192.0.2.1 5000 typ srflx raddr 10.0.0.1 bogus 4000",
+    ] {
+        assert!(unmarshal_candidate(raw).is_err(), "{raw}");
+    }
+    Ok(())
+}
+
+#[test]
+fn tcp_roles_survive_later_extensions_and_non_host_candidates() -> Result<()> {
+    let active = unmarshal_candidate("f 1 tcp 123 192.0.2.2 5001 typ host tcptype active")?;
+    for typ in ["host", "srflx", "prflx", "relay"] {
+        for attrs in [
+            "generation 0 tcptype passive raddr 10.0.0.1 rport 4000",
+            "raddr 10.0.0.1 rport 4000 tcptype passive generation 0",
+        ] {
+            let c = unmarshal_candidate(&format!("f 1 tcp 123 192.0.2.1 5000 typ {typ} {attrs}"))?;
+            assert_eq!(c.tcp_type(), TcpType::Passive);
+            assert!(c.marshal().contains("tcptype passive"));
+            assert!(c.can_pair_with(&active));
+            if typ != "host" {
+                assert_eq!(c.related_address().unwrap().port, 4000);
+            }
+        }
+    }
     Ok(())
 }
