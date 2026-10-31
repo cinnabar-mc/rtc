@@ -68,106 +68,9 @@ impl Flight for Flight0 {
                 ));
             }
 
-            state.remote_random = client_hello.random.clone();
-
-            if let Ok(id) =
-                find_matching_cipher_suite(&client_hello.cipher_suites, &cfg.local_cipher_suites)
-            {
-                if let Ok(cipher_suite) = cipher_suite_for_id(id) {
-                    debug!(
-                        "[handshake:{}] use cipher suite: {}",
-                        srv_cli_str(state.is_client),
-                        cipher_suite.to_string()
-                    );
-                    state.cipher_suite = Some(cipher_suite);
-                }
-            } else {
-                return Err((
-                    Some(Alert {
-                        alert_level: AlertLevel::Fatal,
-                        alert_description: AlertDescription::InsufficientSecurity,
-                    }),
-                    Some(Error::ErrCipherSuiteNoIntersection),
-                ));
-            }
-
-            for extension in &client_hello.extensions {
-                match extension {
-                    Extension::SupportedEllipticCurves(e) => {
-                        if e.elliptic_curves.is_empty() {
-                            return Err((
-                                Some(Alert {
-                                    alert_level: AlertLevel::Fatal,
-                                    alert_description: AlertDescription::InsufficientSecurity,
-                                }),
-                                Some(Error::ErrNoSupportedEllipticCurves),
-                            ));
-                        }
-                        for curve in e.elliptic_curves.iter() {
-                            if cfg.local_named_curves.contains(curve) {
-                                state.named_curve = *curve;
-                                break;
-                            }
-                        }
-                    }
-                    Extension::UseSrtp(e) => {
-                        if let Ok(profile) = find_matching_srtp_profile(
-                            &e.protection_profiles,
-                            &cfg.local_srtp_protection_profiles,
-                        ) {
-                            state.srtp_protection_profile = profile;
-                        } else {
-                            return Err((
-                                Some(Alert {
-                                    alert_level: AlertLevel::Fatal,
-                                    alert_description: AlertDescription::InsufficientSecurity,
-                                }),
-                                Some(Error::ErrServerNoMatchingSrtpProfile),
-                            ));
-                        }
-                    }
-                    Extension::UseExtendedMasterSecret(_)
-                        if cfg.extended_master_secret != ExtendedMasterSecretType::Disable =>
-                    {
-                        state.extended_master_secret = true;
-                    }
-                    Extension::ServerName(e) => {
-                        state.server_name.clone_from(&e.server_name); // remote server name
-                    }
-                    _ => {}
-                }
-            }
-
-            if cfg.extended_master_secret == ExtendedMasterSecretType::Require
-                && !state.extended_master_secret
-            {
-                return Err((
-                    Some(Alert {
-                        alert_level: AlertLevel::Fatal,
-                        alert_description: AlertDescription::InsufficientSecurity,
-                    }),
-                    Some(Error::ErrServerRequiredButNoClientEms),
-                ));
-            }
-
-            if state.local_keypair.is_none() {
-                state.local_keypair = match state
-                    .named_curve
-                    .generate_keypair_with_crypto(cfg.provider().crypto())
-                {
-                    Ok(local_keypar) => Some(local_keypar),
-                    Err(err) => {
-                        return Err((
-                            Some(Alert {
-                                alert_level: AlertLevel::Fatal,
-                                alert_description: AlertDescription::IllegalParameter,
-                            }),
-                            Some(err),
-                        ));
-                    }
-                };
-            }
-
+            state.initial_client_hello_hash =
+                client_hello_hash(client_hello, cfg).map_err(|error| (None, Some(error)))?;
+            negotiate_client_hello(state, cfg, client_hello)?;
             Ok(Box::new(Flight2 {}))
         } else {
             Err((
@@ -205,4 +108,139 @@ impl Flight for Flight0 {
 
         Ok(vec![])
     }
+}
+
+/// Hashes the core hello fields that RFC 6347 requires to stay unchanged on retry.
+pub(crate) fn client_hello_hash(
+    hello: &crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello,
+    cfg: &HandshakeConfig,
+) -> shared::error::Result<Vec<u8>> {
+    let mut normalized = hello.clone();
+    normalized.cookie.clear();
+    normalized.extensions.clear();
+    let mut raw = Vec::new();
+    normalized.marshal(&mut raw)?;
+    cfg.provider()
+        .crypto()
+        .hash(::crypto::HashAlgorithm::Sha256, &raw)
+        .map_err(|error| Error::Crypto(error.to_string()))
+}
+
+/// Selects parameters from the hello that belongs to the authenticated transcript.
+pub(crate) fn negotiate_client_hello(
+    state: &mut State,
+    cfg: &HandshakeConfig,
+    client_hello: &crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello,
+) -> Result<(), (Option<Alert>, Option<Error>)> {
+    state.srtp_protection_profile =
+        crate::extension::extension_use_srtp::SrtpProtectionProfile::Unsupported;
+    state.extended_master_secret = false;
+    state.server_name.clear();
+    state.local_keypair = None;
+    state.named_curve = cfg
+        .local_named_curves
+        .first()
+        .copied()
+        .unwrap_or(DEFAULT_NAMED_CURVE);
+    state.remote_random = client_hello.random.clone();
+
+    if let Ok(id) =
+        find_matching_cipher_suite(&client_hello.cipher_suites, &cfg.local_cipher_suites)
+    {
+        if let Ok(cipher_suite) = cipher_suite_for_id(id) {
+            debug!(
+                "[handshake:{}] use cipher suite: {}",
+                srv_cli_str(state.is_client),
+                cipher_suite.to_string()
+            );
+            state.cipher_suite = Some(cipher_suite);
+        }
+    } else {
+        return Err((
+            Some(Alert {
+                alert_level: AlertLevel::Fatal,
+                alert_description: AlertDescription::InsufficientSecurity,
+            }),
+            Some(Error::ErrCipherSuiteNoIntersection),
+        ));
+    }
+
+    for extension in &client_hello.extensions {
+        match extension {
+            Extension::SupportedEllipticCurves(e) => {
+                if e.elliptic_curves.is_empty() {
+                    return Err((
+                        Some(Alert {
+                            alert_level: AlertLevel::Fatal,
+                            alert_description: AlertDescription::InsufficientSecurity,
+                        }),
+                        Some(Error::ErrNoSupportedEllipticCurves),
+                    ));
+                }
+                for curve in e.elliptic_curves.iter() {
+                    if cfg.local_named_curves.contains(curve) {
+                        state.named_curve = *curve;
+                        break;
+                    }
+                }
+            }
+            Extension::UseSrtp(e) => {
+                if let Ok(profile) = find_matching_srtp_profile(
+                    &e.protection_profiles,
+                    &cfg.local_srtp_protection_profiles,
+                ) {
+                    state.srtp_protection_profile = profile;
+                } else {
+                    return Err((
+                        Some(Alert {
+                            alert_level: AlertLevel::Fatal,
+                            alert_description: AlertDescription::InsufficientSecurity,
+                        }),
+                        Some(Error::ErrServerNoMatchingSrtpProfile),
+                    ));
+                }
+            }
+            Extension::UseExtendedMasterSecret(_)
+                if cfg.extended_master_secret != ExtendedMasterSecretType::Disable =>
+            {
+                state.extended_master_secret = true;
+            }
+            Extension::ServerName(e) => {
+                state.server_name.clone_from(&e.server_name); // remote server name
+            }
+            _ => {}
+        }
+    }
+
+    if cfg.extended_master_secret == ExtendedMasterSecretType::Require
+        && !state.extended_master_secret
+    {
+        return Err((
+            Some(Alert {
+                alert_level: AlertLevel::Fatal,
+                alert_description: AlertDescription::InsufficientSecurity,
+            }),
+            Some(Error::ErrServerRequiredButNoClientEms),
+        ));
+    }
+
+    if state.local_keypair.is_none() {
+        state.local_keypair = match state
+            .named_curve
+            .generate_keypair_with_crypto(cfg.provider().crypto())
+        {
+            Ok(local_keypar) => Some(local_keypar),
+            Err(err) => {
+                return Err((
+                    Some(Alert {
+                        alert_level: AlertLevel::Fatal,
+                        alert_description: AlertDescription::IllegalParameter,
+                    }),
+                    Some(err),
+                ));
+            }
+        };
+    }
+
+    Ok(())
 }

@@ -48,8 +48,6 @@ impl Flight for Flight2 {
             Err(_) => return Flight0 {}.parse(/*tx,*/ state, cache, cfg),
         };
 
-        state.handshake_recv_sequence = seq;
-
         if let Some(message) = msgs.get(&HandshakeType::ClientHello) {
             // Validate type
             let client_hello = match message {
@@ -89,6 +87,20 @@ impl Flight for Flight2 {
                 ));
             }
 
+            let hash = client_hello_hash(client_hello, cfg).map_err(|error| (None, Some(error)))?;
+            if !crypto::constant_time_eq(&hash, &state.initial_client_hello_hash) {
+                return Err((
+                    Some(Alert {
+                        alert_level: AlertLevel::Fatal,
+                        alert_description: AlertDescription::IllegalParameter,
+                    }),
+                    Some(Error::Other(
+                        "ClientHello core parameters changed after cookie challenge".into(),
+                    )),
+                ));
+            }
+            negotiate_client_hello(state, cfg, client_hello)?;
+            state.handshake_recv_sequence = seq;
             Ok(Box::new(Flight4 {}))
         } else {
             Err((
@@ -123,4 +135,91 @@ impl Flight for Flight2 {
             reset_local_sequence_number: false,
         }])
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cipher_suite::CipherSuiteId;
+    use crate::compression_methods::{CompressionMethodId, CompressionMethods};
+    use crate::curve::named_curve::NamedCurve;
+    use crate::extension::{
+        Extension, extension_supported_elliptic_curves::ExtensionSupportedEllipticCurves,
+        extension_use_extended_master_secret::ExtensionUseExtendedMasterSecret,
+    };
+    use crate::handshake::{
+        handshake_message_client_hello::HandshakeMessageClientHello,
+        handshake_random::HandshakeRandom,
+    };
+
+    /// Creates a hello whose core parameters stay fixed across the cookie exchange.
+    fn hello(curve: NamedCurve, ems: bool) -> HandshakeMessageClientHello {
+        let mut extensions = vec![Extension::SupportedEllipticCurves(
+            ExtensionSupportedEllipticCurves {
+                elliptic_curves: vec![curve],
+            },
+        )];
+        if ems {
+            extensions.push(Extension::UseExtendedMasterSecret(
+                ExtensionUseExtendedMasterSecret { supported: true },
+            ));
+        }
+        HandshakeMessageClientHello {
+            version: PROTOCOL_VERSION1_2,
+            random: HandshakeRandom::default(),
+            cookie: Vec::new(),
+            cipher_suites: vec![CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256],
+            compression_methods: CompressionMethods {
+                ids: vec![CompressionMethodId::Null],
+            },
+            extensions,
+        }
+    }
+
+    /// Stores an encoded ClientHello at its original handshake sequence number.
+    fn cache_hello(cache: &mut HandshakeCache, hello: HandshakeMessageClientHello, sequence: u16) {
+        let mut handshake = Handshake::new(HandshakeMessage::ClientHello(hello));
+        handshake.handshake_header.message_sequence = sequence;
+        let mut raw = Vec::new();
+        handshake.marshal(&mut raw).unwrap();
+        assert!(cache.push(raw, 0, sequence, HandshakeType::ClientHello, true));
+    }
+
+    #[test]
+    fn cookie_hello_renegotiates_extensions_and_rejects_changed_core_parameters() {
+        for change_core in [false, true] {
+            let provider = crypto::default_provider().unwrap();
+            let mut cfg = HandshakeConfig::new(provider.clone());
+            cfg.local_named_curves = vec![NamedCurve::X25519, NamedCurve::P256];
+            cfg.extended_master_secret = crate::config::ExtendedMasterSecretType::Request;
+            cfg.local_cipher_suites = vec![CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_128_Gcm_Sha256];
+            let mut state = State::new(provider, false);
+            state.cookie = vec![7; 20];
+            let mut cache = HandshakeCache::new();
+            cache_hello(&mut cache, hello(NamedCurve::X25519, true), 0);
+            Flight0.parse(&mut state, &cache, &cfg).unwrap();
+            assert!(state.extended_master_secret);
+            let mut retry = hello(NamedCurve::P256, false);
+            retry.cookie = state.cookie.clone();
+            if change_core {
+                retry
+                    .cipher_suites
+                    .push(CipherSuiteId::Tls_Ecdhe_Ecdsa_With_Aes_256_Cbc_Sha);
+            }
+            cache_hello(&mut cache, retry, 1);
+            let result = Flight2.parse(&mut state, &cache, &cfg);
+            if change_core {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap().to_string(), "Flight 4");
+                assert_eq!(state.named_curve, NamedCurve::P256);
+                assert_eq!(
+                    state.local_keypair.as_ref().unwrap().curve,
+                    NamedCurve::P256
+                );
+                assert!(!state.extended_master_secret);
+            }
+        }
+    }
+
 }
