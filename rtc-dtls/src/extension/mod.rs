@@ -168,3 +168,46 @@ impl Extension {
         }
     }
 }
+
+/// Reads exactly the payload declared by an extension's outer length.
+fn read_payload<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+    let length = reader.read_u16::<BigEndian>()? as usize;
+    let mut payload = vec![0; length];
+    reader.read_exact(&mut payload)?;
+    Ok(payload)
+}
+
+/// Decodes the optional extension vector at the end of a bounded hello body.
+pub(crate) fn unmarshal_extensions<R: Read>(reader: &mut R) -> Result<Vec<Extension>> {
+    let mut tail = vec![];
+    reader.read_to_end(&mut tail)?;
+    if tail.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut remaining = tail.as_slice();
+    let length = remaining.read_u16::<BigEndian>()? as usize;
+    if length != remaining.len() {
+        return Err(Error::ErrLengthMismatch);
+    }
+    let mut extensions = vec![];
+    while !remaining.is_empty() {
+        if remaining.len() < 4 {
+            return Err(Error::ErrLengthMismatch);
+        }
+        let length = u16::from_be_bytes([remaining[2], remaining[3]]) as usize;
+        let end = 4 + length;
+        if end > remaining.len() {
+            return Err(Error::ErrLengthMismatch);
+        }
+        match Extension::unmarshal(&mut &remaining[..end]) {
+            Ok(extension) => extensions.push(extension),
+            Err(Error::ErrInvalidExtensionType) => {}
+            Err(error) => return Err(error),
+        }
+        remaining = &remaining[end..];
+    }
+    Ok(extensions)
+}
+
+#[cfg(test)]
+mod framing_test;

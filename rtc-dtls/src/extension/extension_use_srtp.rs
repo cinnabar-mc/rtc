@@ -70,8 +70,16 @@ impl ExtensionUseSrtp {
     pub fn marshal<W: Write>(&self, writer: &mut W) -> Result<()> {
         let mki_len =
             u8::try_from(self.master_key_identifier.len()).map_err(|_| Error::ErrLengthMismatch)?;
-        writer.write_u16::<BigEndian>((self.size() - 2) as u16)?;
-        writer.write_u16::<BigEndian>(2 * self.protection_profiles.len() as u16)?;
+        let length = u16::try_from(self.size() - 2).map_err(|_| Error::ErrLengthMismatch)?;
+        let profiles = u16::try_from(
+            self.protection_profiles
+                .len()
+                .checked_mul(2)
+                .ok_or(Error::ErrLengthMismatch)?,
+        )
+        .map_err(|_| Error::ErrLengthMismatch)?;
+        writer.write_u16::<BigEndian>(length)?;
+        writer.write_u16::<BigEndian>(profiles)?;
         for v in &self.protection_profiles {
             writer.write_u16::<BigEndian>(*v as u16)?;
         }

@@ -128,7 +128,7 @@ impl HandshakeMessageServerKeyExchange {
 
         let signature_length = (((data[offset] as u16) << 8) | data[offset + 1] as u16) as usize;
         offset += 2;
-        if data.len() < offset + signature_length {
+        if data.len() != offset + signature_length {
             return Err(Error::ErrBufferTooSmall);
         }
         let signature = data[offset..offset + signature_length].to_vec();

@@ -47,6 +47,9 @@ impl ExtensionRenegotiationInfo {
         }
 
         let renegotiated_connection = reader.read_u8()?;
+        if renegotiated_connection != 0 {
+            return Err(Error::ErrLengthMismatch);
+        }
 
         Ok(ExtensionRenegotiationInfo {
             renegotiated_connection,

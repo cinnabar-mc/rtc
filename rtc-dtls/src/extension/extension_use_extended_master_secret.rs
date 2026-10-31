@@ -44,7 +44,9 @@ impl ExtensionUseExtendedMasterSecret {
     ///
     /// Fails if `reader` is truncated or its contents are not a valid encoding.
     pub fn unmarshal<R: Read>(reader: &mut R) -> Result<Self> {
-        let _ = reader.read_u16::<BigEndian>()?;
+        if reader.read_u16::<BigEndian>()? != 0 {
+            return Err(Error::ErrLengthMismatch);
+        }
 
         Ok(ExtensionUseExtendedMasterSecret { supported: true })
     }

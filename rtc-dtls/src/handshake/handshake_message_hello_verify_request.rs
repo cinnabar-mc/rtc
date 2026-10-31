@@ -74,7 +74,7 @@ impl HandshakeMessageHelloVerifyRequest {
         let mut cookie = vec![];
         reader.read_to_end(&mut cookie)?;
 
-        if cookie.len() < cookie_length as usize {
+        if cookie.len() != cookie_length as usize {
             return Err(Error::ErrBufferTooSmall);
         }
 
