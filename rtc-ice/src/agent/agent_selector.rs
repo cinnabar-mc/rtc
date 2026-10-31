@@ -327,7 +327,7 @@ impl ControllingSelector for Agent {
 
                 // Calculate RTT and track response received
                 let rtt = now.duration_since(pending_request.timestamp);
-                p.on_response_received(rtt);
+                p.on_response_received(now, rtt);
 
                 trace!(
                     "Found valid candidate pair: {} (local_addr {} <-> remote_addr {}), p.state: {}, isUseCandidate: {}, {}, rtt: {:.3}ms",
@@ -502,7 +502,7 @@ impl ControlledSelector for Agent {
 
                 // Calculate RTT and track response received
                 let rtt = now.duration_since(pending_request.timestamp);
-                p.on_response_received(rtt);
+                p.on_response_received(now, rtt);
 
                 trace!(
                     "Found valid candidate pair: {} (local_addr {} <-> remote_addr {}), rtt: {:.3}ms",
@@ -511,6 +511,9 @@ impl ControlledSelector for Agent {
                     self.remote_candidates[p.remote_index].addr(),
                     rtt.as_millis()
                 );
+                if p.nominate_on_binding_success && self.get_selected_pair().is_none() {
+                    self.set_selected_pair(Some(now), Some(pair_index));
+                }
             } else {
                 // This shouldn't happen
                 error!("Success response from invalid candidate pair");
@@ -535,36 +538,19 @@ impl ControlledSelector for Agent {
         }
 
         if let Some(pair_index) = self.find_pair(local_index, remote_index) {
-            // Track request received on the candidate pair
-            self.candidate_pairs[pair_index].on_request_received();
-
-            let p = &self.candidate_pairs[pair_index];
-            let use_candidate = m.contains(ATTR_USE_CANDIDATE);
-            if use_candidate {
-                // https://tools.ietf.org/html/rfc8445#section-7.3.1.5
-
-                if p.state == CandidatePairState::Succeeded {
-                    // If the state of this pair is Succeeded, it means that the check
-                    // previously sent by this pair produced a successful response and
-                    // generated a valid pair (Section 7.2.5.3.2).  The agent sets the
-                    // nominated flag value of the valid pair to true.
-                    if self.get_selected_pair().is_none() {
-                        self.set_selected_pair(Some(now), Some(pair_index));
-                    }
-                    self.send_binding_success(now, m, local_index, remote_index);
-                } else {
-                    // If the received Binding request triggered a new check to be
-                    // enqueued in the triggered-check queue (Section 7.3.1.4), once the
-                    // check is sent and if it generates a successful response, and
-                    // generates a valid pair, the agent sets the nominated flag of the
-                    // pair to true.  If the request fails (Section 7.2.5.2), the agent
-                    // MUST remove the candidate pair from the valid list, set the
-                    // candidate pair state to Failed, and set the checklist state to
-                    // Failed.
-                    self.ping_candidate(now, local_index, remote_index);
+            let pair = &mut self.candidate_pairs[pair_index];
+            pair.on_request_received();
+            if m.contains(ATTR_USE_CANDIDATE) {
+                pair.nominate_on_binding_success = true;
+                if pair.state == CandidatePairState::Succeeded && self.get_selected_pair().is_none()
+                {
+                    self.set_selected_pair(Some(now), Some(pair_index));
                 }
-            } else {
-                self.send_binding_success(now, m, local_index, remote_index);
+            }
+            self.send_binding_success(now, m, local_index, remote_index);
+            if self.candidate_pairs[pair_index].state != CandidatePairState::Succeeded
+                || self.get_selected_pair().is_none()
+            {
                 self.ping_candidate(now, local_index, remote_index);
             }
         }
@@ -576,6 +562,7 @@ mod tests {
     use super::*;
     use crate::agent::{Credentials, agent_config::AgentConfig};
     use crate::candidate::candidate_host::CandidateHostConfig;
+    use shared::{TaggedBytesMut, TransportContext, TransportProtocol};
     use std::sync::Arc;
 
     /// Builds a candidate pair with a chosen local type and custom lower priority bits.
@@ -673,5 +660,203 @@ mod tests {
             }
             eprintln!("ICE check sample {sample}: {:?}/100000", start.elapsed());
         }
+    }
+
+    #[test]
+    fn controlled_nomination_waits_for_reverse_success_without_another_request() {
+        let mut agent = check_agent(CandidateType::Host);
+        let now = Instant::now();
+        let mut nomination = Message::new();
+        nomination
+            .build(&[
+                Box::new(BINDING_REQUEST),
+                Box::new(TransactionId::new()),
+                Box::new(UseCandidateAttr::new()),
+            ])
+            .unwrap();
+        ControlledSelector::handle_binding_request(&mut agent, now, &nomination, 0, 0);
+        let messages: Vec<_> = agent
+            .write_outs
+            .drain(..)
+            .map(|packet| {
+                let mut message = Message::new();
+                message.raw = packet.message.to_vec();
+                message.decode().unwrap();
+                message
+            })
+            .collect();
+        assert!(messages.iter().any(|m| m.typ == BINDING_SUCCESS));
+        assert!(agent.get_selected_pair().is_none());
+        let check = messages.iter().find(|m| m.typ == BINDING_REQUEST).unwrap();
+        let response = Message {
+            transaction_id: check.transaction_id,
+            ..Message::new()
+        };
+        let remote = agent.remote_candidates[0].addr();
+        ControlledSelector::handle_success_response(
+            &mut agent,
+            now + std::time::Duration::from_millis(10),
+            &response,
+            0,
+            0,
+            remote,
+        );
+        assert!(agent.get_selected_pair().is_some());
+        assert!(agent.candidate_pairs[0].nominated);
+    }
+
+    #[test]
+    fn stun_from_mdns_port_reaches_ice_with_both_mdns_modes() {
+        use crate::mdns::MulticastDnsMode;
+        use sansio::Protocol;
+        for mode in [MulticastDnsMode::Disabled, MulticastDnsMode::QueryOnly] {
+            let now = Instant::now();
+            let mut agent = Agent::new(
+                now,
+                Arc::new(AgentConfig {
+                    multicast_dns_mode: mode,
+                    ..Default::default()
+                }),
+                crypto::default_provider().unwrap(),
+            )
+            .unwrap();
+            let fixture = check_agent(CandidateType::Host);
+            agent.local_candidates = fixture.local_candidates;
+            agent.remote_candidates = fixture.remote_candidates;
+            agent.remote_candidates[0].port = 5353;
+            let remote = "127.0.0.1:5353".parse().unwrap();
+            agent.remote_candidates[0].resolved_addr = remote;
+            agent.ufrag_pwd.remote_credentials = fixture.ufrag_pwd.remote_credentials;
+            agent.add_pair(0, 0);
+            let mut request = Message::new();
+            request
+                .build(&[
+                    Box::new(BINDING_REQUEST),
+                    Box::new(TransactionId::new()),
+                    Box::new(Username::new(
+                        ATTR_USERNAME,
+                        format!("{}:peer", agent.ufrag_pwd.local_credentials.ufrag),
+                    )),
+                    Box::new(AttrControlling(agent.tie_breaker)),
+                    Box::new(PriorityAttr(123)),
+                    Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                        agent.ufrag_pwd.local_credentials.pwd.clone(),
+                        agent.crypto_provider.crypto(),
+                    )),
+                    Box::new(FINGERPRINT),
+                ])
+                .unwrap();
+            agent
+                .handle_read(TaggedBytesMut {
+                    now,
+                    transport: TransportContext {
+                        local_addr: agent.local_candidates[0].addr(),
+                        peer_addr: remote,
+                        transport_protocol: TransportProtocol::UDP,
+                        ecn: None,
+                    },
+                    message: bytes::BytesMut::from(request.raw.as_slice()),
+                })
+                .unwrap();
+            assert_eq!(agent.candidate_pairs[0].requests_received, 1);
+            assert_eq!(agent.candidate_pairs[0].responses_sent, 1);
+        }
+    }
+
+    #[test]
+    fn transaction_timestamps_stay_fixed_between_stats_snapshots() {
+        let mut agent = check_agent(CandidateType::Host);
+        let now = Instant::now();
+        ControlledSelector::ping_candidate(&mut agent, now, 0, 0);
+        let request = agent.pending_binding_requests.last().unwrap();
+        let response = Message {
+            transaction_id: request.transaction_id,
+            ..Message::new()
+        };
+        let remote = agent.remote_candidates[0].addr();
+        ControlledSelector::handle_success_response(
+            &mut agent,
+            now + std::time::Duration::from_millis(10),
+            &response,
+            0,
+            0,
+            remote,
+        );
+        let first = agent.get_candidate_pairs_stats(now + std::time::Duration::from_secs(1));
+        let second = agent.get_candidate_pairs_stats(now + std::time::Duration::from_secs(2));
+        assert_eq!(first[0].first_request_timestamp, Some(now));
+        assert_eq!(first[0].last_request_timestamp, Some(now));
+        assert_eq!(
+            first[0].last_response_timestamp,
+            Some(now + std::time::Duration::from_millis(10))
+        );
+        assert_eq!(
+            first[0].first_request_timestamp,
+            second[0].first_request_timestamp
+        );
+        assert_eq!(
+            first[0].last_request_timestamp,
+            second[0].last_request_timestamp
+        );
+        assert_eq!(
+            first[0].last_response_timestamp,
+            second[0].last_response_timestamp
+        );
+        assert_ne!(first[0].timestamp, second[0].timestamp);
+    }
+    #[test]
+    #[ignore = "manual before/after ICE receive benchmark"]
+    fn benchmark_authenticated_binding_requests() {
+        let mut agent = check_agent(CandidateType::Host);
+        let now = Instant::now();
+        agent.candidate_pairs[0].state = CandidatePairState::Succeeded;
+        agent.set_selected_pair(Some(now), Some(0));
+        let mut request = Message::new();
+        request
+            .build(&[
+                Box::new(BINDING_REQUEST),
+                Box::new(TransactionId::new()),
+                Box::new(Username::new(
+                    ATTR_USERNAME,
+                    format!("{}:peer", agent.ufrag_pwd.local_credentials.ufrag),
+                )),
+                Box::new(AttrControlling(agent.tie_breaker)),
+                Box::new(PriorityAttr(123)),
+                Box::new(MessageIntegrity::new_short_term_integrity_with_provider(
+                    agent.ufrag_pwd.local_credentials.pwd.clone(),
+                    agent.crypto_provider.crypto(),
+                )),
+                Box::new(FINGERPRINT),
+            ])
+            .unwrap();
+        let input = shared::TaggedBytesMut {
+            now,
+            transport: shared::TransportContext {
+                local_addr: agent.local_candidates[0].addr(),
+                peer_addr: agent.remote_candidates[0].addr(),
+                transport_protocol: shared::TransportProtocol::UDP,
+                ecn: None,
+            },
+            message: bytes::BytesMut::from(request.raw.as_slice()),
+        };
+        for sample in 0..5 {
+            let start = Instant::now();
+            for _ in 0..10_000 {
+                sansio::Protocol::handle_read(
+                    &mut agent,
+                    shared::TaggedBytesMut {
+                        now: input.now,
+                        transport: input.transport,
+                        message: input.message.clone(),
+                    },
+                )
+                .unwrap();
+                std::hint::black_box(&agent.write_outs);
+                agent.write_outs.clear();
+                agent.pending_binding_requests.clear();
+            }
+            eprintln!("ICE sample {sample}: {:?}/10000", start.elapsed());
+        }
+        assert_eq!(agent.candidate_pairs[0].requests_received, 50_000);
     }
 }

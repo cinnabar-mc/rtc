@@ -1041,6 +1041,7 @@ fn test_candidate_pair_stats() -> Result<()> {
 
     let srflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidateServerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -1056,6 +1057,7 @@ fn test_candidate_pair_stats() -> Result<()> {
 
     let prflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidatePeerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -1186,6 +1188,7 @@ fn test_local_candidate_stats() -> Result<()> {
 
     let srflx_local: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidateServerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "192.168.1.1".to_owned(),
@@ -1279,6 +1282,7 @@ fn test_remote_candidate_stats() -> Result<()> {
 
     let srflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidateServerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -1294,6 +1298,7 @@ fn test_remote_candidate_stats() -> Result<()> {
 
     let prflx_remote: Arc<dyn Candidate + Send + Sync> = Arc::new(
         CandidatePeerReflexiveConfig {
+                tcp_type: Default::default(),
             base_config: CandidateConfig {
                 network: "udp".to_owned(),
                 address: "10.10.10.2".to_owned(),
@@ -3356,6 +3361,9 @@ fn test_stats_snapshot_reports_the_callers_instant_throughout() -> Result<()> {
     let pairs = a.get_candidate_pairs_stats(t(600));
     assert!(!pairs.is_empty(), "adding a remote candidate forms a pair");
     for p in &pairs {
+        assert!(p.first_request_timestamp.is_none());
+        assert!(p.last_request_timestamp.is_none());
+        assert!(p.last_response_timestamp.is_none());
         for (field, stamp) in [
             ("timestamp", p.timestamp),
             ("last_packet_sent_timestamp", p.last_packet_sent_timestamp),
@@ -3363,9 +3371,6 @@ fn test_stats_snapshot_reports_the_callers_instant_throughout() -> Result<()> {
                 "last_packet_received_timestamp",
                 p.last_packet_received_timestamp,
             ),
-            ("first_request_timestamp", p.first_request_timestamp),
-            ("last_request_timestamp", p.last_request_timestamp),
-            ("last_response_timestamp", p.last_response_timestamp),
             ("consent_expired_timestamp", p.consent_expired_timestamp),
         ] {
             assert_eq!(stamp, t(600), "{field} must report the caller's instant");

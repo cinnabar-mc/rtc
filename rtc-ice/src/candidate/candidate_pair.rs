@@ -9,7 +9,7 @@
 //! media.
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Represent the ICE candidate pair state.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +79,14 @@ pub struct CandidatePair {
     pub(crate) binding_request_count: u16,
     pub(crate) state: CandidatePairState,
     pub(crate) nominated: bool,
+    /// A controlled-side nomination awaiting a successful reverse check.
+    pub(crate) nominate_on_binding_success: bool,
+    /// The first request sent, absent until a check is emitted.
+    pub(crate) first_request_timestamp: Option<Instant>,
+    /// The latest request sent, absent until a check is emitted.
+    pub(crate) last_request_timestamp: Option<Instant>,
+    /// The latest valid response received, absent until a check succeeds.
+    pub(crate) last_response_timestamp: Option<Instant>,
 
     // STUN transaction stats
     /// Total number of STUN connectivity check requests sent (not including retransmissions).
@@ -154,6 +162,10 @@ impl CandidatePair {
             state: CandidatePairState::Waiting,
             binding_request_count: 0,
             nominated: false,
+            nominate_on_binding_success: false,
+            first_request_timestamp: None,
+            last_request_timestamp: None,
+            last_response_timestamp: None,
             // STUN transaction stats
             requests_sent: 0,
             requests_received: 0,
@@ -186,7 +198,9 @@ impl CandidatePair {
     }
 
     /// Called when a STUN binding request is sent.
-    pub fn on_request_sent(&mut self) {
+    pub fn on_request_sent(&mut self, now: Instant) {
+        self.first_request_timestamp.get_or_insert(now);
+        self.last_request_timestamp = Some(now);
         self.requests_sent += 1;
     }
 
@@ -202,7 +216,8 @@ impl CandidatePair {
 
     /// Called when a STUN binding success response is received.
     /// Also updates RTT measurements.
-    pub fn on_response_received(&mut self, rtt: Duration) {
+    pub fn on_response_received(&mut self, now: Instant, rtt: Duration) {
+        self.last_response_timestamp = Some(now);
         self.responses_received += 1;
         self.current_round_trip_time = rtt;
         self.total_round_trip_time += rtt;

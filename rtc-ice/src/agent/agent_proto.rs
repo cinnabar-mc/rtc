@@ -9,8 +9,10 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
     type Time = Instant;
 
     fn handle_read(&mut self, msg: TaggedBytesMut) -> Result<()> {
-        // demuxing mDNS packet from STUN packet whether peer addr port is MDNS_PORT
-        if msg.transport.peer_addr.port() == MDNS_PORT {
+        // STUN uses its own framing even when a candidate's source port is 5353.
+        if msg.transport.peer_addr.port() == MDNS_PORT
+            && !stun::message::is_stun_message(&msg.message)
+        {
             let remote_candidates = if let Some(mdns_conn) = &mut self.mdns {
                 mdns_conn.handle_read(msg)?;
 
