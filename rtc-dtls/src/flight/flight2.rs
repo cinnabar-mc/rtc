@@ -88,7 +88,12 @@ impl Flight for Flight2 {
             }
 
             let hash = client_hello_hash(client_hello, cfg).map_err(|error| (None, Some(error)))?;
-            if !crypto::constant_time_eq(&hash, &state.initial_client_hello_hash) {
+            let initial = cache
+                .initial_client_hello(cfg.initial_epoch)
+                .ok_or((None, Some(Error::ErrLengthMismatch)))?;
+            let initial_hash =
+                client_hello_hash(&initial, cfg).map_err(|error| (None, Some(error)))?;
+            if !crypto::constant_time_eq(&hash, &initial_hash) {
                 return Err((
                     Some(Alert {
                         alert_level: AlertLevel::Fatal,

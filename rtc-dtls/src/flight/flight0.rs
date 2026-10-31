@@ -68,8 +68,6 @@ impl Flight for Flight0 {
                 ));
             }
 
-            state.initial_client_hello_hash =
-                client_hello_hash(client_hello, cfg).map_err(|error| (None, Some(error)))?;
             negotiate_client_hello(state, cfg, client_hello)?;
             Ok(Box::new(Flight2 {}))
         } else {

@@ -73,6 +73,25 @@ impl HandshakeCache {
         true
     }
 
+    /// Reads the original offer already retained in the handshake transcript.
+    pub(crate) fn initial_client_hello(
+        &self,
+        epoch: u16,
+    ) -> Option<crate::handshake::handshake_message_client_hello::HandshakeMessageClientHello> {
+        let item = self
+            .cache
+            .iter()
+            .filter(|item| {
+                item.typ == HandshakeType::ClientHello && item.is_client && item.epoch == epoch
+            })
+            .min_by_key(|item| item.message_sequence)?;
+        let handshake = Handshake::unmarshal(&mut item.data.as_slice()).ok()?;
+        match handshake.handshake_message {
+            HandshakeMessage::ClientHello(hello) => Some(hello),
+            _ => None,
+        }
+    }
+
     /// Preserves the completed transcript without retaining new handshake messages.
     pub(crate) fn finish(&mut self) {
         self.complete = true;
