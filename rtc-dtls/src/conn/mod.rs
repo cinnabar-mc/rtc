@@ -467,6 +467,7 @@ impl DTLSConn {
     }
 
     pub(crate) fn set_handshake_completed(&mut self) {
+        self.cache.finish();
         self.handshake_completed = true;
     }
 

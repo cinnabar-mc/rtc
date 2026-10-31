@@ -702,3 +702,52 @@ fn test_handshake_cache_session_hash() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn aggregate_cache_bounds_include_bytes_and_empty_messages() {
+    let mut cache = HandshakeCache::new();
+    for sequence in 0..1000 {
+        assert!(cache.push(Vec::new(), 0, sequence, HandshakeType::ClientHello, true));
+    }
+    assert!(!cache.push(Vec::new(), 0, 1000, HandshakeType::ClientHello, true));
+    assert_eq!(cache.cache.len(), 1000);
+
+    let mut cache = HandshakeCache::new();
+    for sequence in 0..4 {
+        assert!(cache.push(
+            vec![0; 2 * 1024 * 1024],
+            0,
+            sequence,
+            HandshakeType::Certificate,
+            true
+        ));
+    }
+    assert!(!cache.push(vec![1], 0, 4, HandshakeType::Certificate, true));
+    assert_eq!(
+        cache
+            .cache
+            .iter()
+            .map(|item| item.data.len())
+            .sum::<usize>(),
+        8 * 1024 * 1024
+    );
+    // Duplicates never consume capacity, and overflow leaves the transcript intact.
+    assert!(!cache.push(
+        vec![2; 2 * 1024 * 1024],
+        0,
+        0,
+        HandshakeType::Certificate,
+        true
+    ));
+    assert_eq!(cache.cache[0].data[0], 0);
+}
+
+#[test]
+fn completed_cache_preserves_the_transcript_without_new_entries() {
+    let mut cache = HandshakeCache::new();
+    assert!(cache.push(vec![1], 0, 0, HandshakeType::ClientHello, true));
+    cache.finish();
+    assert!(!cache.push(vec![2], 0, 1, HandshakeType::ClientHello, true));
+    assert_eq!(cache.cache.len(), 1);
+    assert_eq!(cache.cache[0].data, vec![1]);
+}

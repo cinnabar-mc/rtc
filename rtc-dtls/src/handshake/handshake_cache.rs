@@ -27,11 +27,17 @@ pub(crate) struct HandshakeCachePullRule {
 #[derive(Clone)]
 pub(crate) struct HandshakeCache {
     cache: Vec<HandshakeCacheItem>,
+    size: usize,
+    complete: bool,
 }
 
 impl HandshakeCache {
     pub(crate) fn new() -> Self {
-        HandshakeCache { cache: vec![] }
+        HandshakeCache {
+            cache: vec![],
+            size: 0,
+            complete: false,
+        }
     }
 
     pub(crate) fn push(
@@ -42,12 +48,20 @@ impl HandshakeCache {
         typ: HandshakeType,
         is_client: bool,
     ) -> bool {
+        if self.complete {
+            return false;
+        }
         for i in &self.cache {
             if i.message_sequence == message_sequence && i.is_client == is_client {
                 return false;
             }
         }
 
+        // Bound both payload storage and metadata, including empty messages.
+        if self.cache.len() >= 1000 || data.len() > 8 * 1024 * 1024 - self.size {
+            return false;
+        }
+        self.size += data.len();
         self.cache.push(HandshakeCacheItem {
             typ,
             is_client,
@@ -57,6 +71,11 @@ impl HandshakeCache {
         });
 
         true
+    }
+
+    /// Preserves the completed transcript without retaining new handshake messages.
+    pub(crate) fn finish(&mut self) {
+        self.complete = true;
     }
 
     // The caller authenticates the record first. Recognize the complete Finished or
